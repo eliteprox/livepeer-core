@@ -12,8 +12,8 @@ from livepeer_gateway.errors import NoRunnerAvailableError
 from livepeer_gateway.remote_signer import LivePaymentChallenge, LivePaymentSession, get_signer_info
 from livepeer_gateway.selection import runner_selector
 
-from livepeer_core.contracts import Attempt, ProvisionedActor
-from livepeer_core.store.postgres import PostgresStore
+from livepeer_builder.contracts import Attempt, ProvisionedActor
+from livepeer_builder.store.postgres import PostgresStore
 from settings import discovery_url, signer_url
 
 HELLO_APP = "livepeer-example/hello-world"

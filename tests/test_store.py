@@ -5,11 +5,11 @@ from uuid import uuid4
 
 import pytest
 
-from livepeer_core.contracts import Attempt, ProvisionedActor, SyncCheckpoint, UsageRow
-from livepeer_core.costs.sync import CostSyncWorker
-from livepeer_core.store.postgres import PostgresStore
-from livepeer_core.testing.fakes import ScriptedUsageSource
-from livepeer_core.contracts import UsagePage
+from livepeer_builder.contracts import Attempt, ProvisionedActor, SyncCheckpoint, UsageRow
+from livepeer_builder.costs.sync import CostSyncWorker
+from livepeer_builder.store.postgres import PostgresStore
+from livepeer_builder.testing.fakes import ScriptedUsageSource
+from livepeer_builder.contracts import UsagePage
 
 pytestmark = pytest.mark.asyncio
 

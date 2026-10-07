@@ -6,7 +6,7 @@ from uuid import UUID
 
 import asyncpg
 
-from livepeer_core.contracts import (
+from livepeer_builder.contracts import (
     ActorSpend,
     Attempt,
     JobCost,

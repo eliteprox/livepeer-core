@@ -4,8 +4,8 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from livepeer_core.adapters.batteries import BatteriesUsageSource, idempotency_key, usage_row_from_item
-from livepeer_core.errors import CursorMismatch
+from livepeer_builder.adapters.batteries import BatteriesUsageSource, idempotency_key, usage_row_from_item
+from livepeer_builder.errors import CursorMismatch
 
 
 def test_idempotency_key_is_stable_base64url() -> None:

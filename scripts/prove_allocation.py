@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from calls import hello_call, record
-from livepeer_core.store.postgres import PostgresStore
+from livepeer_builder.store.postgres import PostgresStore
 from settings import database_url
 
 CALLS = {"alice": 2, "bob": 1}

@@ -1,9 +1,9 @@
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 
-from livepeer_core.contracts import SyncCheckpoint, SyncReport, UsageRow
-from livepeer_core.errors import CursorMismatch
-from livepeer_core.protocols import CostSyncStore, UsageSource
+from livepeer_builder.contracts import SyncCheckpoint, SyncReport, UsageRow
+from livepeer_builder.errors import CursorMismatch
+from livepeer_builder.protocols import CostSyncStore, UsageSource
 
 
 class CostSyncWorker:

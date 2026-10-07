@@ -1,4 +1,4 @@
-# livepeer_core
+# livepeer_builder
 
 Cost-sync worker and Postgres store for attributing Batteries usage by allocation and signer auth id.
 

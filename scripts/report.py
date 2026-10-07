@@ -5,9 +5,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from livepeer_core.adapters.batteries import BatteriesClient, BatteriesUsageSource
-from livepeer_core.costs.sync import CostSyncWorker
-from livepeer_core.store.postgres import PostgresStore
+from livepeer_builder.adapters.batteries import BatteriesClient, BatteriesUsageSource
+from livepeer_builder.costs.sync import CostSyncWorker
+from livepeer_builder.store.postgres import PostgresStore
 from settings import batteries_url, database_url, required
 
 
