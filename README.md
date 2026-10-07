@@ -34,3 +34,24 @@ uv run python scripts/report.py
 ```
 
 `prove_allocation.py` records manifest ids and ignores `auth_ids`. `prove_job.py` and `prove_forged_manifest.py` record the signer auth id from gateway commit `3250c08`.
+
+## How a user meets a usage row
+
+The cost-sync feed copies Batteries rows. It does not contain the enterprise user. Postgres joins those rows to a user the gateway already stored.
+
+```mermaid
+flowchart TB
+    user["Enterprise user"] --> actors["lpb_actors"]
+    actors --> apikey["Bearer API key"]
+    apikey --> mint["auth_id minted"]
+    mint -->|signed| state["Sealed signer state"]
+    state --> attempt["lpb_attempts"]
+    attempt -->|auth_id| job["Job cost"]
+    mint -->|charged| usage["Batteries usage row"]
+    usage --> events["lpb_usage_events"]
+    events -->|applied rows| spend["User spend"]
+    events -->|applied rows| job
+    actors -->|allocation_id| spend
+```
+
+`auth_id` is the payment session Batteries mints. Job cost sums applied usage rows whose `payment_session_id` is one of the attempt's auth ids. User spend sums applied rows on the allocation stored for that actor. `manifest_id` is a label.
