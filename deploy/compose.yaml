@@ -1,0 +1,180 @@
+# Real-node stack for the attribution proof.
+# Requires deploy/.env (see env.example) and deploy/creds.toml from render_secrets.py.
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.4
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - 512M
+      - --reserve-memory
+      - 0M
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092
+      - --set
+      - redpanda.auto_create_topics_enabled=true
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  batteries:
+    build:
+      context: /home/elite/repos/clearinghouse-batteries
+      dockerfile: examples/compose/Dockerfile
+    command:
+      - serve
+      - --db-path
+      - /data/clearinghouse.db
+      - --creds-file
+      - /run/secrets/creds.toml
+      - --enable-auth-webhook
+      - 0.0.0.0:8080
+      - --enable-management-api
+      - 0.0.0.0:8081
+      - --unsafe-http-bind
+      - --enable-accounting
+      - --kafka-broker
+      - redpanda:9092
+      - --kafka-topic
+      - livepeer-signing
+    volumes:
+      - batteries-data:/data
+      - ./creds.toml:/run/secrets/creds.toml:ro
+    ports:
+      - "127.0.0.1:18080:8080"
+      - "127.0.0.1:18081:8081"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  signer:
+    image: livepeer/go-livepeer:v0.9.3
+    command:
+      - -remoteSigner
+      - -network=arbitrum-one-mainnet
+      - -ethUrl=${ETH_RPC_URL}
+      - -ethKeystorePath=/keystore
+      - -ethAcctAddr=${SIGNER_ETH_ACCT}
+      - -ethPassword=${SIGNER_ETH_PASSWORD}
+      - -httpAddr=0.0.0.0:7936
+      - -maxPricePerUnit=${MAX_PRICE_PER_UNIT}
+      - -remoteSignerWebhookUrl=http://batteries:8080/v1/signer/authorize
+      - -remoteSignerWebhookHeaders=Livepeer-Clearinghouse-Token:${SIGNER_WEBHOOK_TOKEN}
+      - -monitor=true
+      - -kafkaBootstrapServers=redpanda:9092
+      - -kafkaGatewayTopic=livepeer-signing
+      - -v=4
+    volumes:
+      - ${SIGNER_KEYSTORE_DIR}:/keystore:ro
+    ports:
+      - "127.0.0.1:7936:7936"
+    depends_on:
+      batteries:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+  orchestrator:
+    image: livepeer/go-livepeer:v0.9.3
+    command:
+      - -orchestrator
+      - -useLiveRunners
+      - -serviceAddr=127.0.0.1:8935
+      - -httpAddr=0.0.0.0:8935
+      - -liveRunnerAddr=https://orchestrator:8935
+      - -orchSecret=abcdef
+      - -network=arbitrum-one-mainnet
+      - -ethUrl=${ETH_RPC_URL}
+      - -ethKeystorePath=/keystore
+      - -ethAcctAddr=${ORCH_ETH_ACCT}
+      - -ethPassword=${ORCH_ETH_PASSWORD}
+      - -ethOrchAddr=${ORCH_ONCHAIN_ADDR}
+      - -pricePerUnit=0
+      - -ticketEV=1000000000
+      - -maxFaceValue=4000000000000000
+      - -monitor=false
+      - -v=4
+    volumes:
+      - ${SIGNER_KEYSTORE_DIR}:/keystore:ro
+    ports:
+      - "127.0.0.1:8935:8935"
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' | openssl s_client -connect 127.0.0.1:8935 -quiet 2>/dev/null | grep -q '200 OK'"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  hello:
+    build:
+      context: /home/elite/repos/livepeer_core/deploy/runners/hello
+      dockerfile: /home/elite/repos/livepeer_core/deploy/runners/app.Dockerfile
+    command:
+      - --host=0.0.0.0
+      - --orchestrator=https://orchestrator:8935
+      - --orchSecret=abcdef
+      - --runner-url=http://hello:8989
+      - --price=${PRICE}
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+  echo:
+    build:
+      context: /home/elite/repos/live-runner-example-apps/echo
+      dockerfile: /home/elite/repos/livepeer_core/deploy/runners/app.Dockerfile
+    command:
+      - --host=0.0.0.0
+      - --orchestrator=https://orchestrator:8935
+      - --orchSecret=abcdef
+      - --runner-url=http://echo:8989
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+  hold:
+    build:
+      context: ./runners/hold
+    environment:
+      ORCH_URL: https://orchestrator:8935
+      ORCH_SECRET: abcdef
+      RUNNER_URL: http://hold:8989
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: livepeer
+      POSTGRES_PASSWORD: livepeer
+      POSTGRES_DB: livepeer
+    ports:
+      - "127.0.0.1:55434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U livepeer"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  batteries-data:
