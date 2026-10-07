@@ -33,7 +33,8 @@ async def test_issue_authenticate_revoke() -> None:
 
 async def test_only_admin_issues_keys() -> None:
     access = AccessService(MemoryStore(), FixedClock())
+    non_admin = ActorContext(actor_id="alice", scopes=frozenset({"jobs:run"}))
     with pytest.raises(AccessDenied):
-        await access.issue_key(ActorContext(actor_id="alice", scopes=frozenset({"jobs:run"})), "bob", scopes=["jobs:run"])
+        await access.issue_key(non_admin, "bob", scopes=["jobs:run"])
     with pytest.raises(AccessDenied):
         await access.authenticate("anything")  # no admin token configured

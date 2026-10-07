@@ -52,28 +52,32 @@ def runners_from_entries(entries: list[dict[str, Any]]) -> list[Runner]:
     for entry in entries:
         orchestrator_url = _text(entry.get("address"))
         for raw in entry.get("runners") or ():
-            if not isinstance(raw, dict):
-                continue
-            url = _text(raw.get("url"))
-            app = _text(raw.get("app"))
-            if not url or not app:
-                continue
-            capacity = raw.get("capacity") if isinstance(raw.get("capacity"), int) else None
-            sessions = raw.get("session_ids")
-            available = capacity - len(sessions) if capacity is not None and isinstance(sessions, list) else None
-            runners.append(
-                Runner(
-                    url=url,
-                    app=app,
-                    runner_id=_text(raw.get("runner_id")),
-                    mode=_text(raw.get("mode")),
-                    orchestrator_url=orchestrator_url,
-                    capacity=capacity,
-                    capacity_available=available,
-                    rate=_rate(raw.get("price_info")),
-                )
-            )
+            runner = _runner_from_raw(raw, orchestrator_url)
+            if runner is not None:
+                runners.append(runner)
     return runners
+
+
+def _runner_from_raw(raw: object, orchestrator_url: str | None) -> Runner | None:
+    if not isinstance(raw, dict):
+        return None
+    url = _text(raw.get("url"))
+    app = _text(raw.get("app"))
+    if not url or not app:
+        return None
+    capacity = raw.get("capacity") if isinstance(raw.get("capacity"), int) else None
+    sessions = raw.get("session_ids")
+    available = capacity - len(sessions) if capacity is not None and isinstance(sessions, list) else None
+    return Runner(
+        url=url,
+        app=app,
+        runner_id=_text(raw.get("runner_id")),
+        mode=_text(raw.get("mode")),
+        orchestrator_url=orchestrator_url,
+        capacity=capacity,
+        capacity_available=available,
+        rate=_rate(raw.get("price_info")),
+    )
 
 
 class SdkRunnerTransport:
@@ -116,7 +120,7 @@ class SdkRunnerTransport:
             )
         except LivepeerGatewayError as error:
             raise _call_error(error) from error
-        except (aiohttp.ClientError, OSError, TimeoutError) as error:
+        except (aiohttp.ClientError, OSError) as error:
             raise RunnerCallError(_network_kind(error), str(error), payment_sent=False) from error
         content = result.content if result.content is not None else json.dumps(result.data).encode()
         return RunnerReply(

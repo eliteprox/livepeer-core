@@ -52,27 +52,7 @@ class JobService:
         call, one update when the job ends. Raises OperationExists, JobFailed.
         """
         require(actor, "jobs:run")
-        if request.operation_ref is not None:
-            existing = await self._store.job_by_operation_ref(
-                actor.application_id, actor.actor_id, request.operation_ref
-            )
-            if existing is not None:
-                raise OperationExists(existing)
-        job = Job(
-            id=uuid4(),
-            actor_id=actor.actor_id,
-            application_id=actor.application_id,
-            operation_ref=request.operation_ref,
-            app=request.app,
-            capability=request.capability,
-            model=request.model,
-            state="running",
-            attempts=(),
-            failure=None,
-            created_at=self._clock.now(),
-            completed_at=None,
-        )
-        await self._store.create_job(job)
+        job = await self._create_job(actor, request)
 
         candidates = self._discovery.runners(request.app)
         if not candidates:
@@ -141,6 +121,30 @@ class JobService:
             payment_sent=False,
         )
         raise JobFailed(await self._finish(job, "failed", failure, attempts))
+
+    async def _create_job(self, actor: ActorContext, request: JobRequest) -> Job:
+        if request.operation_ref is not None:
+            existing = await self._store.job_by_operation_ref(
+                actor.application_id, actor.actor_id, request.operation_ref
+            )
+            if existing is not None:
+                raise OperationExists(existing)
+        job = Job(
+            id=uuid4(),
+            actor_id=actor.actor_id,
+            application_id=actor.application_id,
+            operation_ref=request.operation_ref,
+            app=request.app,
+            capability=request.capability,
+            model=request.model,
+            state="running",
+            attempts=(),
+            failure=None,
+            created_at=self._clock.now(),
+            completed_at=None,
+        )
+        await self._store.create_job(job)
+        return job
 
     async def get(self, actor: ActorContext, job_id: UUID) -> Job:
         require(actor, "jobs:read")

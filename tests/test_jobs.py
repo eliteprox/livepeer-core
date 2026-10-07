@@ -112,7 +112,9 @@ async def test_success_records_auth_ids_and_passes_the_actor_credential() -> Non
     assert result.job.attempts[0].manifest_id == "manifest-1"
     assert h.transport.calls[0][2] == "key-alice"
     stored = await h.store.get_job(result.job.id)
-    assert stored is not None and stored.state == "succeeded" and len(stored.attempts) == 1
+    assert stored is not None
+    assert stored.state == "succeeded"
+    assert len(stored.attempts) == 1
 
 
 async def test_fails_over_only_before_payment() -> None:
@@ -131,8 +133,9 @@ async def test_bound_after_payment_and_unknown_outcome_is_uncertain() -> None:
     h = await Harness(
         [RunnerCallError("unreachable", "reset", payment_sent=True, auth_ids=("auth-x",)), _reply()]
     ).ready()
+    request = JobRequest(app=APP)
     with pytest.raises(JobFailed) as info:
-        await h.jobs.run(ALICE, JobRequest(app=APP))
+        await h.jobs.run(ALICE, request)
     job = info.value.job
     assert job.state == "uncertain"
     assert len(job.attempts) == 1
@@ -145,20 +148,25 @@ async def test_runner_4xx_is_the_callers_mistake_and_does_not_fail_over() -> Non
     h = await Harness(
         [RunnerCallError("http", "bad input", payment_sent=True, status_code=422, body='{"detail":"x"}')]
     ).ready()
+    request = JobRequest(app=APP)
     with pytest.raises(JobFailed) as info:
-        await h.jobs.run(ALICE, JobRequest(app=APP))
+        await h.jobs.run(ALICE, request)
     failure = info.value.job.failure
     assert info.value.job.state == "failed"
-    assert failure is not None and failure.kind == "runner_rejected" and failure.status_code == 422
+    assert failure is not None
+    assert failure.kind == "runner_rejected"
+    assert failure.status_code == 422
     assert len(h.transport.calls) == 1
 
 
 async def test_payment_failure_before_dispatch_is_a_payment_failure_not_uncertain() -> None:
     h = await Harness([RunnerCallError("payment", "signer 402", payment_sent=False)]).ready()
+    request = JobRequest(app=APP)
     with pytest.raises(JobFailed) as info:
-        await h.jobs.run(ALICE, JobRequest(app=APP))
+        await h.jobs.run(ALICE, request)
     assert info.value.job.state == "failed"
-    assert info.value.job.failure is not None and info.value.job.failure.kind == "payment"
+    assert info.value.job.failure is not None
+    assert info.value.job.failure.kind == "payment"
 
 
 async def test_all_runners_refused_is_a_refused_failure_with_cost_none() -> None:
@@ -168,25 +176,30 @@ async def test_all_runners_refused_is_a_refused_failure_with_cost_none() -> None
             RunnerCallError("unreachable", "down", payment_sent=False),
         ]
     ).ready()
+    request = JobRequest(app=APP, max_attempts=2)
     with pytest.raises(JobFailed) as info:
-        await h.jobs.run(ALICE, JobRequest(app=APP, max_attempts=2))
-    assert info.value.job.failure is not None and info.value.job.failure.kind == "unreachable"
+        await h.jobs.run(ALICE, request)
+    assert info.value.job.failure is not None
+    assert info.value.job.failure.kind == "unreachable"
     assert (await h.store.job_cost(info.value.job.id)).status == "pending"
 
 
 async def test_no_runner_for_the_app_is_no_offering() -> None:
     h = await Harness([], runners=[]).ready()
+    request = JobRequest(app="missing/app")
     with pytest.raises(JobFailed) as info:
-        await h.jobs.run(ALICE, JobRequest(app="missing/app"))
-    assert info.value.job.failure is not None and info.value.job.failure.kind == "no_offering"
+        await h.jobs.run(ALICE, request)
+    assert info.value.job.failure is not None
+    assert info.value.job.failure.kind == "no_offering"
     assert (await h.store.job_cost(info.value.job.id)).status == "none"
 
 
 async def test_operation_ref_dispatches_once_per_actor() -> None:
     h = await Harness([_reply(), _reply()]).ready()
     first = await h.jobs.run(ALICE, JobRequest(app=APP, operation_ref="order-7"))
+    duplicate = JobRequest(app=APP, operation_ref="order-7")
     with pytest.raises(OperationExists) as info:
-        await h.jobs.run(ALICE, JobRequest(app=APP, operation_ref="order-7"))
+        await h.jobs.run(ALICE, duplicate)
     assert info.value.job.id == first.job.id
     assert len(h.transport.calls) == 1
     other = await h.jobs.run(BOB, JobRequest(app=APP, operation_ref="order-7"))  # bob's ref is bob's
@@ -198,8 +211,9 @@ async def test_selection_prefers_free_capacity_and_respects_max_attempts() -> No
         [RunnerCallError("refused", "503", payment_sent=False, status_code=503)],
         runners=[_runner("http://full", available=0), _runner("http://free", available=2), _runner("http://c")],
     ).ready()
+    request = JobRequest(app=APP, max_attempts=1)
     with pytest.raises(JobFailed):
-        await h.jobs.run(ALICE, JobRequest(app=APP, max_attempts=1))
+        await h.jobs.run(ALICE, request)
     assert [call[0].url for call in h.transport.calls] == ["http://free"]
 
 
@@ -211,8 +225,10 @@ async def test_reads_are_scoped_to_the_owner() -> None:
         await h.jobs.get(BOB, result.job.id)
     with pytest.raises(AccessDenied):
         await h.costs.for_job(BOB, result.job.id)
+    read_only = ActorContext(actor_id="alice", scopes=frozenset({"jobs:read"}))
+    request = JobRequest(app=APP)
     with pytest.raises(AccessDenied):
-        await h.jobs.run(ActorContext(actor_id="alice", scopes=frozenset({"jobs:read"})), JobRequest(app=APP))
+        await h.jobs.run(read_only, request)
     admin = ActorContext(actor_id="op", scopes=frozenset({"admin"}))
     assert (await h.jobs.get(admin, result.job.id)).id == result.job.id
     assert [job.id for job in await h.jobs.list(ALICE)] == [result.job.id]

@@ -130,8 +130,9 @@ async def test_job_round_trip_and_operation_ref(store: PostgresStore) -> None:
     assert await store.job_by_operation_ref("test", "alice", "order-1") == loaded
     assert [job.id for job in await store.list_jobs("test", "alice")] == [job_id]
 
+    duplicate = _job(uuid4(), "alice", operation_ref="order-1")
     with pytest.raises(OperationExists) as info:
-        await store.create_job(_job(uuid4(), "alice", operation_ref="order-1"))
+        await store.create_job(duplicate)
     assert info.value.job.id == job_id
     await store.create_job(_job(uuid4(), "bob-ref", operation_ref="order-1"))  # another actor may reuse it
 
@@ -151,7 +152,8 @@ async def test_access_keys(store: PostgresStore) -> None:
     assert await store.access_key_by_hash("hash-2") is None
     await store.revoke_access_key("k1", NOW)
     revoked = await store.access_key_by_hash("hash-1")
-    assert revoked is not None and revoked.revoked_at == NOW
+    assert revoked is not None
+    assert revoked.revoked_at == NOW
 
 
 async def test_spend_job_and_manifest_queries(store: PostgresStore) -> None:
