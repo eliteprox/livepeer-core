@@ -25,7 +25,7 @@ class BatteriesClient:
         self,
         base_url: str,
         token: str,
-        engine_id: str = "livepeer-core",
+        engine_id: str = "livepeer-builder",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
@@ -98,7 +98,7 @@ class BatteriesClient:
 
     async def allocation(self, allocation_id: str) -> dict[str, Any]:
         body = await self._request("GET", f"/v1/allocations/{allocation_id}")
-        return body
+        return dict(body)
 
     async def _request(
         self,
@@ -188,5 +188,5 @@ def _error_message(response: httpx.Response) -> str:
     except json.JSONDecodeError:
         return response.text
     if isinstance(body, dict) and isinstance(body.get("error"), str):
-        return body["error"]
+        return str(body["error"])
     return response.text

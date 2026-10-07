@@ -30,6 +30,7 @@ async def main() -> None:
                 manifest_id=result.manifest_id,
                 payment_sent=result.payment_sent,
                 outcome=result.outcome,
+                runner_url=result.runner_url,
             )
             print(f"{actor_id} job {job_id} auth_ids {list(result.auth_ids)} outcome {result.outcome}")
         auth_id = await sign_twice(actors["shared"], HELLO_APP, "fixed")
@@ -39,7 +40,7 @@ async def main() -> None:
             auth_ids=(auth_id,),
             manifest_id=None,
             payment_sent=True,
-            outcome="reserved",
+            outcome="succeeded",  # sign-only: two tickets on one session, no runner was called
         )
         print(f"shared reservation job {job_id} auth_id {auth_id}")
     finally:

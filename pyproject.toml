@@ -1,16 +1,24 @@
 [project]
 name = "livepeer-builder"
 version = "0.1.0"
-description = "Enterprise gateway cost sync and usage attribution"
+description = "Builder engine for Livepeer gateways: discovery, paid jobs, and network cost by actor"
 readme = "README.md"
 authors = [
     { name = "John | Elite Encoder", email = "john@eliteencoder.net" }
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "aiohttp>=3.9",
     "asyncpg>=0.32.0",
     "httpx>=0.28.1",
+    "livepeer-gateway",
     "pydantic>=2",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [build-system]
@@ -19,15 +27,23 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "fastapi>=0.115",
+    "mypy>=1.13",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
-]
-proof = [
-    "livepeer-gateway",
 ]
 
 [tool.uv.sources]
 livepeer-gateway = { git = "https://github.com/eliteprox/livepeer-python-gateway.git", rev = "3250c08cb6424d339614f1e9095064fbe7e6da6e" }
+
+[tool.mypy]
+strict = true
+packages = ["livepeer_builder"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*", "livepeer_gateway", "livepeer_gateway.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

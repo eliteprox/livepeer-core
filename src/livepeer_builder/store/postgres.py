@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
@@ -7,16 +8,30 @@ from uuid import UUID
 import asyncpg
 
 from livepeer_builder.contracts import (
+    AccessKey,
     ActorSpend,
     Attempt,
+    Failure,
+    Job,
     JobCost,
+    JobState,
     ManifestCost,
     ProvisionedActor,
     SyncCheckpoint,
     UsageRow,
 )
+from livepeer_builder.errors import OperationExists
 
 _MIGRATIONS = Path(__file__).resolve().parents[3] / "migrations"
+
+_JOB_COLUMNS = """
+    id, actor_id, application_id, operation_ref, app, capability, model,
+    state, failure, created_at, completed_at
+"""
+_ATTEMPT_COLUMNS = """
+    job_id, number, runner_url, orchestrator_url, auth_ids, manifest_id,
+    payment_sent, outcome, status_code, started_at, ended_at
+"""
 
 
 class PostgresStore:
@@ -109,55 +124,176 @@ class PostgresStore:
             actor.api_key_ref,
         )
 
+    async def actor(self, actor_id: str) -> ProvisionedActor | None:
+        row = await self._pool.fetchrow(
+            "SELECT actor_id, grant_id, allocation_id, api_key_ref FROM lpb_actors WHERE actor_id = $1",
+            actor_id,
+        )
+        return _actor(row) if row is not None else None
+
     async def list_actors(self) -> list[ProvisionedActor]:
         rows = await self._pool.fetch(
-            """
-            SELECT actor_id, grant_id, allocation_id, api_key_ref
-            FROM lpb_actors
-            ORDER BY actor_id
-            """
+            "SELECT actor_id, grant_id, allocation_id, api_key_ref FROM lpb_actors ORDER BY actor_id"
         )
-        return [
-            ProvisionedActor(
-                actor_id=row["actor_id"],
-                grant_id=row["grant_id"],
-                allocation_id=row["allocation_id"],
-                api_key_ref=row["api_key_ref"],
-            )
-            for row in rows
-        ]
+        return [_actor(row) for row in rows]
 
-    async def record_attempt(self, actor_id: str, attempt: Attempt) -> None:
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    """
-                    INSERT INTO lpb_jobs (id, actor_id)
-                    VALUES ($1, $2)
-                    ON CONFLICT (id) DO NOTHING
-                    """,
-                    attempt.job_id,
-                    actor_id,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO lpb_attempts (
-                      job_id, number, auth_ids, manifest_id, payment_sent, outcome
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    ON CONFLICT (job_id, number) DO UPDATE
-                      SET auth_ids = EXCLUDED.auth_ids,
-                          manifest_id = EXCLUDED.manifest_id,
-                          payment_sent = EXCLUDED.payment_sent,
-                          outcome = EXCLUDED.outcome
-                    """,
-                    attempt.job_id,
-                    attempt.number,
-                    list(attempt.auth_ids),
-                    attempt.manifest_id,
-                    attempt.payment_sent,
-                    attempt.outcome,
-                )
+    async def create_job(self, job: Job) -> None:
+        try:
+            await self._pool.execute(
+                f"""
+                INSERT INTO lpb_jobs ({_JOB_COLUMNS})
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                """,
+                job.id,
+                job.actor_id,
+                job.application_id,
+                job.operation_ref,
+                job.app,
+                job.capability,
+                job.model,
+                job.state,
+                job.failure.model_dump_json() if job.failure is not None else None,
+                job.created_at,
+                job.completed_at,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            if job.operation_ref is None:
+                raise
+            existing = await self.job_by_operation_ref(job.application_id, job.actor_id, job.operation_ref)
+            if existing is None:
+                raise
+            raise OperationExists(existing) from exc
+
+    async def job_by_operation_ref(self, application_id: str, actor_id: str, operation_ref: str) -> Job | None:
+        row = await self._pool.fetchrow(
+            f"""
+            SELECT {_JOB_COLUMNS} FROM lpb_jobs
+            WHERE application_id = $1 AND actor_id = $2 AND operation_ref = $3
+            """,
+            application_id,
+            actor_id,
+            operation_ref,
+        )
+        return await self._job(row) if row is not None else None
+
+    async def get_job(self, job_id: UUID) -> Job | None:
+        row = await self._pool.fetchrow(f"SELECT {_JOB_COLUMNS} FROM lpb_jobs WHERE id = $1", job_id)
+        return await self._job(row) if row is not None else None
+
+    async def list_jobs(self, application_id: str, actor_id: str, limit: int = 50) -> list[Job]:
+        rows = await self._pool.fetch(
+            f"""
+            SELECT {_JOB_COLUMNS} FROM lpb_jobs
+            WHERE application_id = $1 AND actor_id = $2
+            ORDER BY created_at DESC
+            LIMIT $3
+            """,
+            application_id,
+            actor_id,
+            limit,
+        )
+        return [await self._job(row) for row in rows]
+
+    async def record_attempt(self, attempt: Attempt) -> None:
+        await self._pool.execute(
+            f"""
+            INSERT INTO lpb_attempts ({_ATTEMPT_COLUMNS})
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (job_id, number) DO UPDATE
+              SET auth_ids = EXCLUDED.auth_ids,
+                  manifest_id = EXCLUDED.manifest_id,
+                  payment_sent = EXCLUDED.payment_sent,
+                  outcome = EXCLUDED.outcome,
+                  status_code = EXCLUDED.status_code,
+                  ended_at = EXCLUDED.ended_at
+            """,
+            attempt.job_id,
+            attempt.number,
+            attempt.runner_url,
+            attempt.orchestrator_url,
+            list(attempt.auth_ids),
+            attempt.manifest_id,
+            attempt.payment_sent,
+            attempt.outcome,
+            attempt.status_code,
+            attempt.started_at,
+            attempt.ended_at,
+        )
+
+    async def finish_job(self, job_id: UUID, state: JobState, failure: Failure | None, completed_at: datetime) -> None:
+        await self._pool.execute(
+            "UPDATE lpb_jobs SET state = $2, failure = $3, completed_at = $4 WHERE id = $1",
+            job_id,
+            state,
+            failure.model_dump_json() if failure is not None else None,
+            completed_at,
+        )
+
+    async def _job(self, row: asyncpg.Record) -> Job:
+        attempts = await self._pool.fetch(
+            f"SELECT {_ATTEMPT_COLUMNS} FROM lpb_attempts WHERE job_id = $1 ORDER BY number",
+            row["id"],
+        )
+        failure = row["failure"]
+        return Job(
+            id=row["id"],
+            actor_id=row["actor_id"],
+            application_id=row["application_id"],
+            operation_ref=row["operation_ref"],
+            app=row["app"],
+            capability=row["capability"],
+            model=row["model"],
+            state=row["state"],
+            attempts=tuple(_attempt(item) for item in attempts),
+            failure=Failure.model_validate_json(failure) if failure is not None else None,
+            created_at=row["created_at"],
+            completed_at=row["completed_at"],
+        )
+
+    async def insert_access_key(self, key: AccessKey, token_hash: str) -> None:
+        await self._pool.execute(
+            """
+            INSERT INTO lpb_access_keys (
+              key_id, token_hash, actor_id, application_id, scopes, label, created_at, revoked_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """,
+            key.key_id,
+            token_hash,
+            key.actor_id,
+            key.application_id,
+            list(key.scopes),
+            key.label,
+            key.created_at,
+            key.revoked_at,
+        )
+
+    async def access_key_by_hash(self, token_hash: str) -> AccessKey | None:
+        row = await self._pool.fetchrow(
+            """
+            SELECT key_id, actor_id, application_id, scopes, label, created_at, revoked_at
+            FROM lpb_access_keys WHERE token_hash = $1
+            """,
+            token_hash,
+        )
+        if row is None:
+            return None
+        return AccessKey(
+            key_id=row["key_id"],
+            actor_id=row["actor_id"],
+            application_id=row["application_id"],
+            scopes=tuple(row["scopes"]),
+            label=row["label"],
+            created_at=row["created_at"],
+            revoked_at=row["revoked_at"],
+        )
+
+    async def revoke_access_key(self, key_id: str, revoked_at: datetime) -> None:
+        await self._pool.execute(
+            "UPDATE lpb_access_keys SET revoked_at = coalesce(revoked_at, $2) WHERE key_id = $1",
+            key_id,
+            revoked_at,
+        )
 
     async def list_usage(self) -> list[UsageRow]:
         rows = await self._pool.fetch(
@@ -189,27 +325,14 @@ class PostgresStore:
     async def list_attempts(self) -> list[tuple[str, Attempt]]:
         rows = await self._pool.fetch(
             """
-            SELECT j.actor_id, t.job_id, t.number, t.auth_ids, t.manifest_id,
-                   t.payment_sent, t.outcome
+            SELECT j.actor_id, t.job_id, t.number, t.runner_url, t.orchestrator_url, t.auth_ids,
+                   t.manifest_id, t.payment_sent, t.outcome, t.status_code, t.started_at, t.ended_at
             FROM lpb_attempts t
             JOIN lpb_jobs j ON j.id = t.job_id
             ORDER BY j.created_at, t.number
             """
         )
-        return [
-            (
-                row["actor_id"],
-                Attempt(
-                    job_id=row["job_id"],
-                    number=row["number"],
-                    auth_ids=tuple(row["auth_ids"] or ()),
-                    manifest_id=row["manifest_id"],
-                    payment_sent=row["payment_sent"],
-                    outcome=row["outcome"],
-                ),
-            )
-            for row in rows
-        ]
+        return [(row["actor_id"], _attempt(row)) for row in rows]
 
     async def actor_spend(self, actor_id: str) -> ActorSpend:
         row = await self._pool.fetchrow(
@@ -299,6 +422,31 @@ class PostgresStore:
             event_count=len(rows),
             allocation_ids=allocations,
         )
+
+
+def _actor(row: asyncpg.Record) -> ProvisionedActor:
+    return ProvisionedActor(
+        actor_id=row["actor_id"],
+        grant_id=row["grant_id"],
+        allocation_id=row["allocation_id"],
+        api_key_ref=row["api_key_ref"],
+    )
+
+
+def _attempt(row: asyncpg.Record) -> Attempt:
+    return Attempt(
+        job_id=row["job_id"],
+        number=row["number"],
+        runner_url=row["runner_url"],
+        orchestrator_url=row["orchestrator_url"],
+        auth_ids=tuple(row["auth_ids"] or ()),
+        manifest_id=row["manifest_id"],
+        payment_sent=row["payment_sent"],
+        outcome=row["outcome"],
+        status_code=row["status_code"],
+        started_at=row["started_at"],
+        ended_at=row["ended_at"],
+    )
 
 
 async def _insert_usage(conn: asyncpg.Connection, rows: tuple[UsageRow, ...]) -> int:
