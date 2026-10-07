@@ -1,5 +1,5 @@
-from livepeer_core.contracts import Attempt
-from livepeer_core.store.postgres import PostgresStore
+from livepeer_builder.contracts import Attempt
+from livepeer_builder.store.postgres import PostgresStore
 
 
 class AttemptRecorder:

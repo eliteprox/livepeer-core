@@ -8,8 +8,8 @@ from typing import Any
 
 import httpx
 
-from livepeer_core.contracts import UsagePage, UsageRow
-from livepeer_core.errors import BatteriesError, CursorMismatch
+from livepeer_builder.contracts import UsagePage, UsageRow
+from livepeer_builder.errors import BatteriesError, CursorMismatch
 
 _TOKEN_HEADER = "Livepeer-Clearinghouse-Token"
 _STATUSES = {"applied", "quarantined", "ignored", "duplicate"}

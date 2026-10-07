@@ -1,5 +1,5 @@
 [project]
-name = "livepeer-core"
+name = "livepeer-builder"
 version = "0.1.0"
 description = "Enterprise gateway cost sync and usage attribution"
 readme = "README.md"

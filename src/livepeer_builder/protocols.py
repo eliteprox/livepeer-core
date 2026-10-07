@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from livepeer_core.contracts import SyncCheckpoint, UsagePage, UsageRow
+from livepeer_builder.contracts import SyncCheckpoint, UsagePage, UsageRow
 
 
 class UsageSource(Protocol):

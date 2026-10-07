@@ -1,7 +1,7 @@
 from decimal import Decimal
 
-from livepeer_core.contracts import SyncCheckpoint, UsagePage, UsageRow
-from livepeer_core.costs.sync import observed_fee_eth
+from livepeer_builder.contracts import SyncCheckpoint, UsagePage, UsageRow
+from livepeer_builder.costs.sync import observed_fee_eth
 
 
 class ScriptedUsageSource:

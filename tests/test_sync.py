@@ -3,10 +3,10 @@ from decimal import Decimal
 
 import pytest
 
-from livepeer_core.contracts import SyncCheckpoint, UsagePage, UsageRow
-from livepeer_core.costs.sync import CostSyncWorker
-from livepeer_core.errors import CursorMismatch
-from livepeer_core.testing.fakes import MemoryCostSyncStore, ScriptedUsageSource
+from livepeer_builder.contracts import SyncCheckpoint, UsagePage, UsageRow
+from livepeer_builder.costs.sync import CostSyncWorker
+from livepeer_builder.errors import CursorMismatch
+from livepeer_builder.testing.fakes import MemoryCostSyncStore, ScriptedUsageSource
 
 
 def _row(

@@ -5,9 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from livepeer_core.adapters.batteries import BatteriesClient
-from livepeer_core.contracts import ProvisionedActor
-from livepeer_core.store.postgres import PostgresStore
+from livepeer_builder.adapters.batteries import BatteriesClient
+from livepeer_builder.contracts import ProvisionedActor
+from livepeer_builder.store.postgres import PostgresStore
 from settings import batteries_url, database_url, load_env, required
 
 ACTORS = ("alice", "bob", "shared")

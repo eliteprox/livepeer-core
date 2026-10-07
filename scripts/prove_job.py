@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from calls import HELLO_APP, hello_call, record, sign_twice
-from livepeer_core.store.postgres import PostgresStore
+from livepeer_builder.store.postgres import PostgresStore
 from settings import database_url
 
 
