@@ -1,6 +1,20 @@
+from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 
-from livepeer_builder.contracts import SyncCheckpoint, UsagePage, UsageRow
+from livepeer_builder.contracts import JobRequest, Runner, SyncCheckpoint, UsagePage, UsageRow
+
+
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+
+
+class DiscoverySource(Protocol):
+    async def fetch(self) -> tuple[Runner, ...]: ...
+
+
+class SelectionPolicy(Protocol):
+    def order(self, candidates: Sequence[Runner], request: JobRequest) -> Sequence[Runner]: ...
 
 
 class UsageSource(Protocol):
