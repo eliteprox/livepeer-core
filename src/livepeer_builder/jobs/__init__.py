@@ -1,3 +1,3 @@
-from livepeer_builder.jobs.recorder import AttemptRecorder
+from livepeer_builder.jobs.service import JobService, owns, require
 
-__all__ = ["AttemptRecorder"]
+__all__ = ["JobService", "owns", "require"]
