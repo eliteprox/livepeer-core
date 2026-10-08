@@ -68,7 +68,7 @@ async def store() -> AsyncIterator[PostgresStore]:
         if connected == TEST_DATABASE:
             await conn.execute(
                 """
-                TRUNCATE lpb_attempts, lpb_jobs, lpb_usage_events, lpb_cost_cursor, lpb_actors
+                TRUNCATE lpb_attempts, lpb_jobs, lpb_usage_events, lpb_cost_cursor, lpb_actors, lpb_access_keys
                 """
             )
     await opened.close()

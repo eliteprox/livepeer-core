@@ -1,10 +1,21 @@
 """The dispatch rules the contract fixes, run against the in-memory fakes."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
-from livepeer_builder.contracts import ActorContext, JobRequest, NetworkRate, ProvisionedActor, Runner, RunnerReply
+from livepeer_builder.contracts import (
+    ActorContext,
+    JobRequest,
+    NetworkRate,
+    ProvisionedActor,
+    Runner,
+    RunnerReply,
+    SyncCheckpoint,
+    UsageRow,
+)
+from livepeer_builder.costs.service import CostService
 from livepeer_builder.discovery.service import DiscoveryService, MostCapacityFirst
 from livepeer_builder.errors import AccessDenied, JobFailed, OperationExists, RunnerCallError
 from livepeer_builder.jobs.service import JobService
@@ -40,6 +51,23 @@ def _reply(auth_ids: tuple[str, ...] = ("auth-1",)) -> RunnerReply:
     )
 
 
+def _row(row_id: str, session_id: str, allocation_id: str = "alloc-alice") -> UsageRow:
+    return UsageRow(
+        id=row_id,
+        event_id=row_id,
+        status="applied",
+        manifest_id="manifest-1",
+        allocation_id=allocation_id,
+        payment_session_id=session_id,
+        request_id=None,
+        pipeline="fixed",
+        computed_fee_eth=Decimal("0.00001"),
+        computed_fee_usd=None,
+        currency="eth",
+        created_at=datetime(2026, 10, 7, tzinfo=UTC),
+    )
+
+
 class Harness:
     def __init__(
         self,
@@ -61,6 +89,7 @@ class Harness:
             self,
             self.clock,
         )
+        self.costs = CostService(self.store, None, self.clock)
 
     async def credential(self, actor: ActorContext) -> str | None:
         stored = await self.store.actor(actor.actor_id)
@@ -194,6 +223,8 @@ async def test_reads_are_scoped_to_the_owner() -> None:
     assert (await h.jobs.get(ALICE, result.job.id)).id == result.job.id
     with pytest.raises(AccessDenied):
         await h.jobs.get(BOB, result.job.id)
+    with pytest.raises(AccessDenied):
+        await h.costs.for_job(BOB, result.job.id)
     read_only = ActorContext(actor_id="alice", scopes=frozenset({"jobs:read"}))
     request = JobRequest(app=APP)
     with pytest.raises(AccessDenied):
@@ -202,6 +233,29 @@ async def test_reads_are_scoped_to_the_owner() -> None:
     assert (await h.jobs.get(admin, result.job.id)).id == result.job.id
     assert [job.id for job in await h.jobs.list(ALICE)] == [result.job.id]
     assert await h.jobs.list(BOB) == []
+
+
+async def test_job_cost_joins_on_auth_id_and_the_actors_allocation() -> None:
+    h = await Harness([_reply(("auth-1",))]).ready()
+    result = await h.jobs.run(ALICE, JobRequest(app=APP))
+    assert (await h.costs.for_job(ALICE, result.job.id)).status == "pending"
+    await h.store.apply(
+        (
+            _row("r1", "auth-1"),
+            _row("r2", "auth-1"),
+            _row("r3", "auth-1", allocation_id="alloc-someone-else"),  # same manifest, other allocation
+            _row("r4", "auth-other"),
+        ),
+        SyncCheckpoint(resume_cursor=None),
+    )
+    cost = await h.costs.for_job(ALICE, result.job.id)
+    assert cost.status == "observed"
+    assert cost.event_count == 2
+    assert cost.fee_eth == Decimal("0.00002")
+    spend = await h.costs.for_actor(ALICE)
+    assert spend.event_count == 3  # every applied row on alice's allocation, whichever job
+    with pytest.raises(AccessDenied):
+        await h.costs.for_actor(BOB, "alice")
 
 
 class _Boom:
@@ -218,6 +272,13 @@ async def test_unexpected_error_closes_the_job_instead_of_leaving_it_running() -
     assert job is not None
     assert job.state == "failed"
     assert job.completed_at is not None
+
+
+async def test_default_credential_job_cost_matches_on_the_session() -> None:
+    h = await Harness([_reply(("auth-1",))]).ready()
+    result = await h.jobs.run(BOB, JobRequest(app=APP))  # bob has no allocation of his own
+    await h.store.apply((_row("r1", "auth-1", allocation_id="alloc-operator"),), SyncCheckpoint(resume_cursor=None))
+    assert (await h.costs.for_job(BOB, result.job.id)).status == "observed"
 
 
 def test_job_path_cannot_leave_the_runner_host() -> None:

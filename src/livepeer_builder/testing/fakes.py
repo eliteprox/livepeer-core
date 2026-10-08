@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from livepeer_builder.contracts import (
+    AccessKey,
     ActorSpend,
     Attempt,
     Failure,
@@ -127,6 +128,7 @@ class MemoryStore(MemoryCostSyncStore):
         self.actors: dict[str, ProvisionedActor] = {}
         self.jobs: dict[UUID, Job] = {}
         self.attempts: dict[UUID, list[Attempt]] = {}
+        self.keys: dict[str, tuple[AccessKey, str]] = {}
 
     async def record_actor(self, actor: ProvisionedActor) -> None:
         self.actors[actor.actor_id] = actor
@@ -228,6 +230,22 @@ class MemoryStore(MemoryCostSyncStore):
             event_count=len(rows),
             allocation_ids=tuple(sorted({row.allocation_id for row in rows if row.allocation_id})),
         )
+
+    async def insert_access_key(self, key: AccessKey, token_hash: str) -> None:
+        self.keys[key.key_id] = (key, token_hash)
+
+    async def access_key_by_hash(self, token_hash: str) -> AccessKey | None:
+        for key, stored_hash in self.keys.values():
+            if stored_hash == token_hash:
+                return key
+        return None
+
+    async def revoke_access_key(self, key_id: str, revoked_at: datetime) -> None:
+        if key_id not in self.keys:
+            return
+        key, stored_hash = self.keys[key_id]
+        if key.revoked_at is None:
+            self.keys[key_id] = (key.model_copy(update={"revoked_at": revoked_at}), stored_hash)
 
     def _with_attempts(self, job: Job) -> Job:
         return job.model_copy(update={"attempts": tuple(self.attempts.get(job.id, []))})
