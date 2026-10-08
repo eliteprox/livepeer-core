@@ -13,6 +13,8 @@ cost = await engine.costs.for_job(actor, result.job.id)
 
 `engine.access` authenticates operator-issued keys. `engine.payments` holds the signer credential and the Batteries allowance. An actor's stored API key is presented to the signer; `LIVEPEER_SIGNER_CREDENTIAL` is the default when the actor has no allocation.
 
+The HTTP adapter is optional: `uv sync --extra server`, then `python -m livepeer_builder.server`. Its contract is [docs/openapi.yaml](docs/openapi.yaml).
+
 Tests:
 
 ```sh
