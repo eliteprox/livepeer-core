@@ -6,7 +6,16 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from livepeer_builder.contracts import Attempt, Failure, Job, ProvisionedActor, SyncCheckpoint, UsagePage, UsageRow
+from livepeer_builder.contracts import (
+    AccessKey,
+    Attempt,
+    Failure,
+    Job,
+    ProvisionedActor,
+    SyncCheckpoint,
+    UsagePage,
+    UsageRow,
+)
 from livepeer_builder.costs.sync import CostSyncWorker
 from livepeer_builder.errors import OperationExists
 from livepeer_builder.store.postgres import PostgresStore
@@ -89,7 +98,7 @@ async def store() -> AsyncIterator[PostgresStore]:
     async with opened._pool.acquire() as conn:
         await conn.execute(
             """
-            TRUNCATE lpb_attempts, lpb_jobs, lpb_usage_events, lpb_cost_cursor, lpb_actors
+            TRUNCATE lpb_attempts, lpb_jobs, lpb_usage_events, lpb_cost_cursor, lpb_actors, lpb_access_keys
             """
         )
     await opened.close()
@@ -127,6 +136,25 @@ async def test_job_round_trip_and_operation_ref(store: PostgresStore) -> None:
         await store.create_job(duplicate)
     assert info.value.job.id == job_id
     await store.create_job(_job(uuid4(), "bob-ref", operation_ref="order-1"))  # another actor may reuse it
+
+
+async def test_access_keys(store: PostgresStore) -> None:
+    key = AccessKey(
+        key_id="k1",
+        actor_id="alice",
+        application_id="test",
+        scopes=("jobs:run", "jobs:read"),
+        label="ci",
+        created_at=NOW,
+        revoked_at=None,
+    )
+    await store.insert_access_key(key, "hash-1")
+    assert await store.access_key_by_hash("hash-1") == key
+    assert await store.access_key_by_hash("hash-2") is None
+    await store.revoke_access_key("k1", NOW)
+    revoked = await store.access_key_by_hash("hash-1")
+    assert revoked is not None
+    assert revoked.revoked_at == NOW
 
 
 async def test_spend_job_and_manifest_queries(store: PostgresStore) -> None:

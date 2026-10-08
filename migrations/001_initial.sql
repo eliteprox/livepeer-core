@@ -47,6 +47,17 @@ CREATE TABLE lpb_attempts (
   PRIMARY KEY (job_id, number)
 );
 
+CREATE TABLE lpb_access_keys (
+  key_id text PRIMARY KEY,
+  token_hash text NOT NULL UNIQUE,
+  actor_id text NOT NULL,
+  application_id text NOT NULL,
+  scopes text[] NOT NULL,
+  label text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL,
+  revoked_at timestamptz
+);
+
 CREATE TABLE lpb_usage_events (
   id text PRIMARY KEY,
   event_id text,

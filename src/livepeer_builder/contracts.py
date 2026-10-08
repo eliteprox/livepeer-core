@@ -124,6 +124,21 @@ class ActorContext(Contract):
     attributes: dict[str, str] = Field(default_factory=dict)
 
 
+class AccessKey(Contract):
+    key_id: str
+    actor_id: str
+    application_id: str
+    scopes: tuple[str, ...]
+    label: str
+    created_at: datetime
+    revoked_at: datetime | None
+
+
+class IssuedKey(Contract):
+    key: AccessKey
+    token: str  # shown once; only its hash is stored
+
+
 AttemptOutcome = Literal["succeeded", "refused", "unreachable", "payment", "timeout", "http"]
 
 
@@ -220,3 +235,11 @@ class ManifestCost(Contract):
     fee_usd: Decimal | None
     event_count: int
     allocation_ids: tuple[str, ...]
+
+
+class Allowance(Contract):
+    allocation_id: str
+    status: str
+    granted_eth: Decimal | None
+    spent_eth: Decimal | None
+    available_eth: Decimal | None
