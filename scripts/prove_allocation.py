@@ -29,6 +29,7 @@ async def main() -> None:
                     manifest_id=result.manifest_id,
                     payment_sent=result.payment_sent,
                     outcome=result.outcome,
+                    runner_url=result.runner_url,
                 )
                 print(
                     f"{actor_id} call {index + 1} job {job_id} manifest {result.manifest_id} "
