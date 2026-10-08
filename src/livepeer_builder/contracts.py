@@ -1,13 +1,69 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Contract(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+# Discovery
+
+
+class NetworkRate(Contract):
+    amount: Decimal
+    currency: str
+    unit: str
+
+
+class Runner(Contract):
+    url: str
+    app: str
+    runner_id: str | None
+    mode: str | None
+    orchestrator_url: str | None
+    capacity: int | None
+    capacity_available: int | None
+    rate: NetworkRate | None
+
+
+class DiscoverySnapshot(Contract):
+    runners: tuple[Runner, ...]
+    observed_at: datetime | None
+    last_attempt_at: datetime | None
+    last_error: str | None
+
+
+class Offering(Contract):
+    app: str
+    rate_low: NetworkRate | None
+    rate_high: NetworkRate | None
+    runner_count: int
+    ready_count: int
+    observed_at: datetime
+
+
+class JobRequest(Contract):
+    app: str  # the runner app a discovery entry advertises
+    path: str = ""  # appended to the runner URL; must start with "/"
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
+    payload: dict[str, Any] | None = None
+    operation_ref: str | None = None  # the caller's key; makes a retry safe
+    capability: str | None = None  # labels only; the engine does not resolve them
+    model: str | None = None
+    max_attempts: int = 3
+    timeout_s: float = 300.0
+
+    @field_validator("path")
+    @classmethod
+    def _stays_on_the_runner(cls, value: str) -> str:
+        # A leading "/" ends the URL authority, so the call cannot leave the runner's host.
+        if value and not value.startswith("/"):
+            raise ValueError("path must be empty or start with '/'")
+        return value
 
 
 class UsageRow(Contract):
