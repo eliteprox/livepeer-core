@@ -25,7 +25,7 @@ class BatteriesClient:
         self,
         base_url: str,
         token: str,
-        engine_id: str = "livepeer-core",  # part of every idempotency key; changing it breaks retries
+        engine_id: str = "livepeer-builder",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")

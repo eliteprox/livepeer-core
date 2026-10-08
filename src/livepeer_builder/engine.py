@@ -49,7 +49,7 @@ class LivepeerSettings(Contract):
     cost_sync_interval_s: float = 30.0
     database_url: str | None = None  # None selects the in-memory store
     admin_token: SecretStr | None = None  # bootstraps AccessService in service mode
-    engine_id: str = "livepeer-core"  # namespaces Batteries idempotency keys; keep it stable
+    engine_id: str = "livepeer-builder"  # namespaces Batteries idempotency keys
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "LivepeerSettings":
