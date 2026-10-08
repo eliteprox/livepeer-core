@@ -19,6 +19,8 @@ Unit tests:
 DATABASE_URL=postgresql://livepeer:livepeer@127.0.0.1:55433/livepeer uv run pytest
 ```
 
+The HTTP adapter is optional: `uv sync --extra server`, then `python -m livepeer_builder.server`. Its contract is [docs/openapi.yaml](docs/openapi.yaml).
+
 Real-node proof, after `deploy/.env` is filled in:
 
 ```sh

@@ -1,0 +1,1126 @@
+openapi: 3.1.0
+info:
+  title: livepeer-builder
+  version: 0.1.0
+  summary: REST adapter for the builder engine.
+  description: |
+    HTTP API served by `python -m livepeer_builder.server` (default
+    `127.0.0.1:8080`). Each `/v1` route authenticates a bearer token and calls
+    one engine service.
+
+    This document is the review contract. The process also exposes FastAPI's
+    generated `/openapi.json`, `/docs`, and `/redoc`. Those omit bodies for
+    routes that return a raw `Response` (`POST /v1/jobs`, failed jobs,
+    `/readyz`) and they omit the exception-handler statuses below.
+
+    ## Authentication
+
+    Send `Authorization: Bearer <token>`. Two credentials are accepted:
+
+    - The operator admin token from settings. It authenticates as actor
+      `operator` with scope `admin`.
+    - An access key issued by `POST /v1/keys`. The plaintext token is returned
+      once (prefix `lpk_`). Only its SHA-256 hash is stored.
+
+    Scope `admin` satisfies every scope check. A missing scope is `403`, not
+    `401`. An unknown or revoked key is `401`.
+
+    `/livez` and `/readyz` do not require a token.
+
+    ## Errors
+
+    | Status | Body | When |
+    | --- | --- | --- |
+    | 401 | `{"detail": "<message>"}` | Missing bearer token, or unknown/revoked key |
+    | 403 | `{"error": "<message>"}` | Missing scope, another actor's job, or an actor that is not provisioned |
+    | 409 | a `Job` | `operation_ref` already dispatched a job. Header `Livepeer-Job-Id` is that job |
+    | 422 | FastAPI validation error | Body or query does not match the schema |
+    | 502 | `{"error": "<message>"}` | Batteries answered with a status other than 400, 404, 409, or 422 |
+    | 503 | `{"error": "<message>"}` | Batteries or the usage feed is not configured or cannot be reached |
+    | 400, 404, 409, 422 | `{"error": "<message>"}` | Batteries rejected the call with that status (allocations and allowance) |
+
+    A job that another actor cannot see is `403` with "not found for this
+    actor". The server does not use `404` for a missing job.
+
+    JSON objects reject unknown fields. Money amounts are decimal strings on
+    the wire (a JSON number is also accepted by the models). Timestamps are
+    UTC `date-time`.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Default bind address (`HOST` and `PORT` override it).
+tags:
+  - name: Discovery
+    description: Cached runner advertisements. Requires scope `discover`.
+  - name: Jobs
+    description: Dispatch a paid call and read its record. Run requires `jobs:run`. Read requires `jobs:read`.
+  - name: Costs
+    description: Observed network fees joined to jobs and actors. Read requires `jobs:read`. Sync requires `admin`.
+  - name: Payments
+    description: Batteries allocations. Provision requires `admin`. Reading another actor's allowance requires `admin`; reading your own requires `jobs:read`.
+  - name: Access
+    description: Issue and revoke bearer keys. Requires scope `admin`.
+  - name: Health
+    description: Process and discovery probes. No authentication.
+security:
+  - bearerAuth: []
+paths:
+  /v1/offerings:
+    get:
+      tags: [Discovery]
+      operationId: listOfferings
+      summary: List advertised apps
+      description: |
+        One offering per app in the current discovery snapshot. `ready_count`
+        is the number of runners whose free capacity is unknown or greater
+        than zero.
+      parameters:
+        - $ref: "#/components/parameters/AppFilter"
+      responses:
+        "200":
+          description: Offerings in the current snapshot. An unknown `app` yields an empty array.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Offering"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/runners:
+    get:
+      tags: [Discovery]
+      operationId: listRunners
+      summary: List runners for one app
+      description: Runners currently advertising `app`. This is the candidate set a job dispatch orders by free capacity.
+      parameters:
+        - $ref: "#/components/parameters/AppName"
+      responses:
+        "200":
+          description: Runners for the app. An unknown app yields an empty array.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Runner"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/jobs:
+    post:
+      tags: [Jobs]
+      operationId: runJob
+      summary: Dispatch a job and wait for the runner
+      description: |
+        Creates a job, calls a discovered runner, and returns that runner's
+        body unchanged. The job id is only in the `Livepeer-Job-Id` response
+        header. Fetch `GET /v1/jobs/{job_id}` for the engine record.
+
+        `operation_ref`, together with the caller's `application_id` and
+        `actor_id`, makes a repeat safe. A second dispatch with the same ref
+        returns `409` and the original job; it does not call a runner again.
+
+        The engine orders ready runners by free capacity and tries at most
+        `max_attempts` (at least one). It moves to another runner only when no
+        payment was sent and the runner refused the call or never answered.
+
+        Failed calls return a `Failure` document, not the runner body, except
+        that `runner_rejected` uses the runner's own HTTP status. `body` on
+        the failure is the runner's text, truncated to 4096 characters.
+
+        | `failure.kind` | HTTP status | `Retry-After` |
+        | --- | --- | --- |
+        | `no_offering` | 404 | absent |
+        | `refused` | 503 | `5` only when `payment_sent` is false |
+        | `unreachable` | 503, or 504 when the job is `uncertain` | `5` only when `payment_sent` is false and the job is not `uncertain` |
+        | `payment` | 503 | `10` only when `payment_sent` is false |
+        | `timeout` | 504 | absent |
+        | `runner_rejected` | the runner status, or 400 when it is missing | absent |
+        | `runner_error` | 502 | absent |
+
+        A job is `uncertain` when payment was sent and the runner then could
+        not be reached or timed out. Those responses are always `504` and
+        never include `Retry-After`, because a retry could pay and run twice.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobRequest"
+            example:
+              app: livepeer-example/hello-world
+              path: /hello
+              payload:
+                name: x
+              operation_ref: o-1
+      responses:
+        "200":
+          description: |
+            The runner's response, forwarded with its content type. Shown here
+            as JSON because that is the common runner media type. Any 2xx the
+            runner returns is forwarded the same way.
+          headers:
+            Livepeer-Job-Id:
+              $ref: "#/components/headers/Livepeer-Job-Id"
+          content:
+            application/json:
+              schema:
+                description: The runner's JSON body, unmodified.
+                type: object
+                additionalProperties: true
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Runner rejected the call (`failure.kind` = `runner_rejected`) and reported status 400, or the runner status was missing.
+          headers:
+            Livepeer-Job-Id:
+              $ref: "#/components/headers/Livepeer-Job-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Failure"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No runner advertises `app` (`failure.kind` = `no_offering`).
+          headers:
+            Livepeer-Job-Id:
+              $ref: "#/components/headers/Livepeer-Job-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Failure"
+        "409":
+          description: This `operation_ref` already belongs to a job. The body is that job.
+          headers:
+            Livepeer-Job-Id:
+              $ref: "#/components/headers/Livepeer-Job-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "422":
+          description: |
+            Request validation failed, including a `path` that is non-empty and
+            does not start with `/`. A runner `422` is also forwarded as
+            `runner_rejected`.
+          headers:
+            Livepeer-Job-Id:
+              description: Present when a runner rejected the call. Absent for request validation.
+              schema:
+                type: string
+                format: uuid
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Failure"
+                  - $ref: "#/components/schemas/HTTPValidationError"
+        "502":
+          description: The runner failed with `runner_error`, or the call failed after the engine could not classify it.
+          headers:
+            Livepeer-Job-Id:
+              $ref: "#/components/headers/Livepeer-Job-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Failure"
+        "503":
+          description: |
+            Runner `refused`, `unreachable` (no payment sent), or `payment`.
+            `Retry-After` is set only when `payment_sent` is false.
+          headers:
+            Livepeer-Job-Id:
+              $ref: "#/components/headers/Livepeer-Job-Id"
+            Retry-After:
+              description: Seconds. `5` for `refused` and `unreachable`, `10` for `payment`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Failure"
+        "504":
+          description: |
+            `timeout`, or any failure whose job state is `uncertain`.
+            `Retry-After` is omitted.
+          headers:
+            Livepeer-Job-Id:
+              $ref: "#/components/headers/Livepeer-Job-Id"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Failure"
+    get:
+      tags: [Jobs]
+      operationId: listJobs
+      summary: List the caller's jobs
+      description: |
+        Jobs for the authenticated actor and that key's `application_id`,
+        newest `created_at` first. Scope `admin` does not
+        widen this list: the admin token's actor is `operator`, so this route
+        returns that actor's jobs only. Use `GET /v1/jobs/{job_id}` to read
+        another actor's job.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Clamped to the range 1 through 500. Values outside that range are clamped, not rejected.
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 500
+      responses:
+        "200":
+          description: The caller's jobs, at most `limit` of them.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/jobs/{job_id}:
+    get:
+      tags: [Jobs]
+      operationId: getJob
+      summary: Read one job
+      description: |
+        Requires `jobs:read`. The caller must own the job (same `actor_id` and
+        `application_id`) unless the caller has scope `admin`. A missing job
+        and another actor's job both answer `403`.
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: The job, including attempts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/jobs/{job_id}/cost:
+    get:
+      tags: [Costs]
+      operationId: getJobCost
+      summary: Observed fee for one job
+      description: |
+        Sum of applied usage rows whose payment session is one of the job's
+        attempt `auth_ids`, and whose allocation is the actor's when the actor
+        has one. `pending` means an attempt opened a payment session and no
+        applied row matches yet. `none` means the job has no auth ids.
+        `corrected` is part of the status enum and is not returned by the
+        current store. Same visibility rule as `GET /v1/jobs/{job_id}`.
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: The job's observed cost.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobCost"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/spend:
+    get:
+      tags: [Costs]
+      operationId: getSpend
+      summary: Observed spend for an actor
+      description: |
+        Sum of applied usage rows on the actor's stored allocation. Omit
+        `actor_id` to read the caller (`jobs:read`). Pass `actor_id` for
+        another actor only with scope `admin`. An actor with no allocation
+        is `403`.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+      responses:
+        "200":
+          description: Spend rolled up for the actor's allocation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActorSpend"
+              example:
+                actor_id: alice
+                allocation_id: alloc_1
+                fee_eth: "0"
+                fee_usd: null
+                event_count: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/allowance:
+    get:
+      tags: [Payments]
+      operationId: getAllowance
+      summary: Remaining Batteries allowance
+      description: |
+        Live read of the actor's allocation from Batteries. Omit `actor_id`
+        to read the caller (`jobs:read`). Pass `actor_id` for another actor
+        only with scope `admin`. An actor with no allocation is `403`.
+        Batteries being unconfigured or unreachable is `503`. A Batteries
+        status of 400, 404, 409, or 422 is returned as that status.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+      responses:
+        "200":
+          description: Allowance copied from the Batteries allocation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Allowance"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "400":
+          $ref: "#/components/responses/BatteriesClientError"
+        "404":
+          $ref: "#/components/responses/BatteriesClientError"
+        "409":
+          $ref: "#/components/responses/BatteriesClientError"
+        "422":
+          $ref: "#/components/responses/BatteriesClientError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/costs/sync:
+    post:
+      tags: [Costs]
+      operationId: syncCosts
+      summary: Pull one page-set of usage
+      description: |
+        Requires `admin`. Runs one cost-sync pass against the configured usage
+        source and returns how many rows were new. There is no request body.
+        `503` when no usage source is configured.
+      responses:
+        "200":
+          description: Counts from the pass that just finished.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/allocations:
+    post:
+      tags: [Payments]
+      operationId: provisionActor
+      summary: Provision an actor's allocation
+      description: |
+        Requires `admin`. Creates a Batteries allocation and API key for
+        `actor_id`, then stores them. If the actor is already provisioned,
+        returns the stored record and does not call Batteries again.
+
+        `api_key_ref` in the response is always the literal `***`. The signer
+        credential is not returned on this route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProvisionRequest"
+            example:
+              actor_id: alice
+              grant_id: grant_1
+              amount_eth: "1"
+      responses:
+        "201":
+          description: The stored actor. `api_key_ref` is redacted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisionedActor"
+              example:
+                actor_id: alice
+                grant_id: grant_1
+                allocation_id: alloc_1
+                api_key_ref: "***"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "400":
+          $ref: "#/components/responses/BatteriesClientError"
+        "404":
+          $ref: "#/components/responses/BatteriesClientError"
+        "409":
+          $ref: "#/components/responses/BatteriesClientError"
+        "422":
+          description: Validation failed, or Batteries rejected the call with 422.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/HTTPValidationError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/keys:
+    post:
+      tags: [Access]
+      operationId: issueKey
+      summary: Issue an access key
+      description: |
+        Requires `admin`. Returns the new key and its plaintext token. The
+        token is not stored and cannot be fetched again. Scopes must be from
+        the known set; an unknown scope is `422`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IssueKeyRequest"
+            example:
+              actor_id: alice
+              scopes: [discover, "jobs:run", "jobs:read"]
+              application_id: default
+              label: laptop
+      responses:
+        "201":
+          description: The stored key and the one-time token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedKey"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/keys/{key_id}/revoke:
+    post:
+      tags: [Access]
+      operationId: revokeKey
+      summary: Revoke an access key
+      description: |
+        Requires `admin`. Marks the key revoked. Repeating the call, or
+        revoking an unknown id, still returns `204`. There is no request body.
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          description: "key_id from the issue response, not the bearer token."
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The key is revoked, or it was already revoked or unknown.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /livez:
+    get:
+      tags: [Health]
+      operationId: livez
+      summary: Process is serving
+      security: []
+      responses:
+        "200":
+          description: The process accepted the request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveStatus"
+              example:
+                status: ok
+  /readyz:
+    get:
+      tags: [Health]
+      operationId: readyz
+      summary: Discovery snapshot is fresh
+      description: |
+        `200` when discovery has observed runners within three refresh
+        intervals (the default interval is 15 seconds, so 45 seconds).
+        `503` when discovery has never succeeded or the snapshot is older
+        than that. The body is the same `EngineHealth` document either way.
+        Cost-sync fields are informational and do not change the status.
+      security: []
+      responses:
+        "200":
+          description: Discovery is fresh.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EngineHealth"
+        "503":
+          description: Discovery has no fresh snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EngineHealth"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Operator admin token, or an access-key token from `POST /v1/keys`.
+        Issued tokens use the prefix `lpk_`.
+  parameters:
+    AppFilter:
+      name: app
+      in: query
+      required: false
+      description: |
+        Restrict offerings to this app name. App names contain `/`
+        (`livepeer-example/hello-world`), so the name is a query parameter
+        rather than a path segment.
+      schema:
+        type: string
+      example: livepeer-example/hello-world
+    AppName:
+      name: app
+      in: query
+      required: true
+      description: App name a discovery entry advertises.
+      schema:
+        type: string
+      example: livepeer-example/hello-world
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ActorId:
+      name: actor_id
+      in: query
+      required: false
+      description: |
+        Actor to read. Omit it to read the caller. Another actor requires
+        scope `admin`.
+      schema:
+        type: string
+  headers:
+    Livepeer-Job-Id:
+      description: Id of the job this call created or reused.
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    Unauthorized:
+      description: Bearer token missing, or the key is unknown or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DetailError"
+          examples:
+            missing:
+              value:
+                detail: bearer token required
+            revoked:
+              value:
+                detail: unknown or revoked key
+    Forbidden:
+      description: The token is valid and lacks the scope, or the record is not visible to this actor.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            scope:
+              value:
+                error: "scope 'jobs:run' required"
+            hidden:
+              value:
+                error: "job 00000000-0000-0000-0000-000000000000 not found for this actor"
+    ValidationError:
+      description: The body or a query parameter failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HTTPValidationError"
+    Unavailable:
+      description: A required upstream (Batteries, or the usage feed) is not configured or cannot be reached.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadGateway:
+      description: Batteries answered with a status this server treats as an upstream fault.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BatteriesClientError:
+      description: Batteries rejected the call. The HTTP status matches Batteries.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "Batteries HTTP 404: grant not found"
+  schemas:
+    Decimal:
+      title: Decimal
+      description: Decimal amount. The server writes a string. A JSON number is also accepted.
+      anyOf:
+        - type: number
+        - type: string
+          pattern: '^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$'
+    Scope:
+      type: string
+      enum: [discover, "jobs:run", "jobs:read", admin]
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+    DetailError:
+      type: object
+      additionalProperties: false
+      required: [detail]
+      properties:
+        detail:
+          type: string
+    HTTPValidationError:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: array
+          items:
+            $ref: "#/components/schemas/ValidationErrorItem"
+    ValidationErrorItem:
+      type: object
+      required: [loc, msg, type]
+      properties:
+        loc:
+          type: array
+          items:
+            oneOf:
+              - type: string
+              - type: integer
+        msg:
+          type: string
+        type:
+          type: string
+        input: {}
+    LiveStatus:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    NetworkRate:
+      type: object
+      additionalProperties: false
+      required: [amount, currency, unit]
+      properties:
+        amount:
+          $ref: "#/components/schemas/Decimal"
+        currency:
+          type: string
+          description: Price currency advertised by the runner, such as `usd`.
+        unit:
+          type: string
+          description: Billing unit advertised by the runner, such as `fixed`.
+    Offering:
+      type: object
+      additionalProperties: false
+      required: [app, rate_low, rate_high, runner_count, ready_count, observed_at]
+      properties:
+        app:
+          type: string
+        rate_low:
+          oneOf:
+            - $ref: "#/components/schemas/NetworkRate"
+            - type: "null"
+        rate_high:
+          oneOf:
+            - $ref: "#/components/schemas/NetworkRate"
+            - type: "null"
+        runner_count:
+          type: integer
+        ready_count:
+          type: integer
+          description: Runners with unknown capacity or free capacity greater than zero.
+        observed_at:
+          type: string
+          format: date-time
+    Runner:
+      type: object
+      additionalProperties: false
+      required: [url, app, runner_id, mode, orchestrator_url, capacity, capacity_available, rate]
+      properties:
+        url:
+          type: string
+        app:
+          type: string
+        runner_id:
+          type: [string, "null"]
+        mode:
+          type: [string, "null"]
+          description: Runner mode, such as `single-shot`.
+        orchestrator_url:
+          type: [string, "null"]
+        capacity:
+          type: [integer, "null"]
+        capacity_available:
+          type: [integer, "null"]
+        rate:
+          oneOf:
+            - $ref: "#/components/schemas/NetworkRate"
+            - type: "null"
+    JobRequest:
+      type: object
+      additionalProperties: false
+      required: [app]
+      properties:
+        app:
+          type: string
+          description: App name a discovery entry advertises.
+        path:
+          type: string
+          default: ""
+          description: Appended to the runner URL. Empty, or must start with `/` so the call stays on the runner host.
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE]
+          default: POST
+        payload:
+          type: [object, "null"]
+          additionalProperties: true
+          default: null
+        operation_ref:
+          type: [string, "null"]
+          default: null
+          description: Caller idempotency key. Unique per application and actor.
+        capability:
+          type: [string, "null"]
+          default: null
+          description: Stored on the job as a label. The engine does not select a runner from it.
+        model:
+          type: [string, "null"]
+          default: null
+          description: Stored on the job as a label. The engine does not select a runner from it.
+        max_attempts:
+          type: integer
+          default: 3
+          description: How many runners to try. The server uses at least one.
+        timeout_s:
+          type: number
+          default: 300
+          description: Per-call timeout in seconds, forwarded to the runner transport.
+    Attempt:
+      type: object
+      additionalProperties: false
+      required:
+        - job_id
+        - number
+        - runner_url
+        - orchestrator_url
+        - auth_ids
+        - manifest_id
+        - payment_sent
+        - outcome
+        - status_code
+        - started_at
+        - ended_at
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        number:
+          type: integer
+          description: 1-based attempt number.
+        runner_url:
+          type: [string, "null"]
+        orchestrator_url:
+          type: [string, "null"]
+        auth_ids:
+          type: array
+          items:
+            type: string
+          description: Signer payment sessions this attempt opened. Job cost matches usage rows on these ids.
+        manifest_id:
+          type: [string, "null"]
+          description: Orchestrator label. Not a billing key.
+        payment_sent:
+          type: boolean
+        outcome:
+          type: string
+          enum: [succeeded, refused, unreachable, payment, timeout, http]
+        status_code:
+          type: [integer, "null"]
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: [string, "null"]
+          format: date-time
+    Failure:
+      type: object
+      additionalProperties: false
+      required: [kind, message, status_code, body, payment_sent]
+      properties:
+        kind:
+          type: string
+          enum: [no_offering, refused, unreachable, payment, timeout, runner_rejected, runner_error]
+        message:
+          type: string
+        status_code:
+          type: [integer, "null"]
+        body:
+          type: [string, "null"]
+          description: The runner's response text, at most 4096 characters.
+        payment_sent:
+          type: boolean
+    Job:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - actor_id
+        - application_id
+        - operation_ref
+        - app
+        - capability
+        - model
+        - state
+        - attempts
+        - failure
+        - created_at
+        - completed_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        actor_id:
+          type: string
+        application_id:
+          type: string
+        operation_ref:
+          type: [string, "null"]
+        app:
+          type: string
+        capability:
+          type: [string, "null"]
+        model:
+          type: [string, "null"]
+        state:
+          type: string
+          enum: [running, succeeded, failed, uncertain]
+        attempts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Attempt"
+        failure:
+          oneOf:
+            - $ref: "#/components/schemas/Failure"
+            - type: "null"
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: [string, "null"]
+          format: date-time
+    JobCost:
+      type: object
+      additionalProperties: false
+      required: [job_id, status, fee_eth, fee_usd, event_count]
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [none, pending, observed, corrected]
+        fee_eth:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        fee_usd:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        event_count:
+          type: integer
+    ActorSpend:
+      type: object
+      additionalProperties: false
+      required: [actor_id, allocation_id, fee_eth, fee_usd, event_count]
+      properties:
+        actor_id:
+          type: string
+        allocation_id:
+          type: string
+        fee_eth:
+          $ref: "#/components/schemas/Decimal"
+        fee_usd:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        event_count:
+          type: integer
+    Allowance:
+      type: object
+      additionalProperties: false
+      required: [allocation_id, status, granted_eth, spent_eth, available_eth]
+      properties:
+        allocation_id:
+          type: string
+        status:
+          type: string
+          description: Allocation status string from Batteries.
+        granted_eth:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        spent_eth:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+        available_eth:
+          oneOf:
+            - $ref: "#/components/schemas/Decimal"
+            - type: "null"
+    SyncReport:
+      type: object
+      additionalProperties: false
+      required: [pages, rows_seen, rows_new]
+      properties:
+        pages:
+          type: integer
+        rows_seen:
+          type: integer
+        rows_new:
+          type: integer
+    ProvisionRequest:
+      type: object
+      additionalProperties: false
+      required: [actor_id, grant_id, amount_eth]
+      properties:
+        actor_id:
+          type: string
+        grant_id:
+          type: string
+          description: Batteries grant that funds the new allocation.
+        amount_eth:
+          type: string
+          description: Allocation size in ETH, as a decimal string.
+    ProvisionedActor:
+      type: object
+      additionalProperties: false
+      required: [actor_id, grant_id, allocation_id, api_key_ref]
+      properties:
+        actor_id:
+          type: string
+        grant_id:
+          type: string
+        allocation_id:
+          type: string
+        api_key_ref:
+          type: string
+          description: Always `***` on this HTTP API.
+          const: "***"
+    IssueKeyRequest:
+      type: object
+      additionalProperties: false
+      required: [actor_id, scopes]
+      properties:
+        actor_id:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+        application_id:
+          type: string
+          default: default
+          description: Stored on the key and used as the job ownership scope.
+        label:
+          type: string
+          default: ""
+    AccessKey:
+      type: object
+      additionalProperties: false
+      required: [key_id, actor_id, application_id, scopes, label, created_at, revoked_at]
+      properties:
+        key_id:
+          type: string
+        actor_id:
+          type: string
+        application_id:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+        label:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+    IssuedKey:
+      type: object
+      additionalProperties: false
+      required: [key, token]
+      properties:
+        key:
+          $ref: "#/components/schemas/AccessKey"
+        token:
+          type: string
+          description: Shown once. Send it as a bearer token. Prefix `lpk_`.
+    EngineHealth:
+      type: object
+      additionalProperties: false
+      required: [discovery_fresh, discovery_observed_at, discovery_error, cost_sync_at, cost_sync_error]
+      properties:
+        discovery_fresh:
+          type: boolean
+        discovery_observed_at:
+          type: [string, "null"]
+          format: date-time
+        discovery_error:
+          type: [string, "null"]
+        cost_sync_at:
+          type: [string, "null"]
+          format: date-time
+        cost_sync_error:
+          type: [string, "null"]
