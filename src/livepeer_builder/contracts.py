@@ -243,3 +243,11 @@ class Allowance(Contract):
     granted_eth: Decimal | None
     spent_eth: Decimal | None
     available_eth: Decimal | None
+
+
+class EngineHealth(Contract):
+    discovery_fresh: bool
+    discovery_observed_at: datetime | None
+    discovery_error: str | None
+    cost_sync_at: datetime | None
+    cost_sync_error: str | None

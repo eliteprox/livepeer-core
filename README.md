@@ -1,6 +1,17 @@
 # livepeer_builder
 
-Cost-sync worker and Postgres store for attributing Batteries usage by allocation and signer auth id.
+Builder engine for a Livepeer gateway: discovery, paid jobs, and network cost by actor.
+
+```python
+from livepeer_builder import BuilderEngine, JobRequest, LivepeerSettings
+
+engine = await BuilderEngine.from_settings(LivepeerSettings())
+await engine.start()
+result = await engine.jobs.run(actor, JobRequest(app="example/app", payload={"input": "..."}))
+cost = await engine.costs.for_job(actor, result.job.id)
+```
+
+`engine.access` authenticates operator-issued keys. `engine.payments` holds the signer credential and the Batteries allowance. An actor's stored API key is presented to the signer; `LIVEPEER_SIGNER_CREDENTIAL` is the default when the actor has no allocation.
 
 Tests:
 
