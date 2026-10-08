@@ -174,11 +174,11 @@ class PostgresStore:
             actor_id,
             operation_ref,
         )
-        return await self._job(row) if row is not None else None
+        return (await self._jobs([row]))[0] if row is not None else None
 
     async def get_job(self, job_id: UUID) -> Job | None:
         row = await self._pool.fetchrow(f"SELECT {_JOB_COLUMNS} FROM lpb_jobs WHERE id = $1", job_id)
-        return await self._job(row) if row is not None else None
+        return (await self._jobs([row]))[0] if row is not None else None
 
     async def list_jobs(self, application_id: str, actor_id: str, limit: int = 50) -> list[Job]:
         rows = await self._pool.fetch(
@@ -192,7 +192,7 @@ class PostgresStore:
             actor_id,
             limit,
         )
-        return [await self._job(row) for row in rows]
+        return await self._jobs(rows)
 
     async def record_attempt(self, attempt: Attempt) -> None:
         await self._pool.execute(
@@ -229,26 +229,18 @@ class PostgresStore:
             completed_at,
         )
 
-    async def _job(self, row: asyncpg.Record) -> Job:
+    async def _jobs(self, rows: list[asyncpg.Record]) -> list[Job]:
+        """Attach attempts to job rows with one query."""
+        if not rows:
+            return []
         attempts = await self._pool.fetch(
-            f"SELECT {_ATTEMPT_COLUMNS} FROM lpb_attempts WHERE job_id = $1 ORDER BY number",
-            row["id"],
+            f"SELECT {_ATTEMPT_COLUMNS} FROM lpb_attempts WHERE job_id = ANY($1::uuid[]) ORDER BY job_id, number",
+            [row["id"] for row in rows],
         )
-        failure = row["failure"]
-        return Job(
-            id=row["id"],
-            actor_id=row["actor_id"],
-            application_id=row["application_id"],
-            operation_ref=row["operation_ref"],
-            app=row["app"],
-            capability=row["capability"],
-            model=row["model"],
-            state=row["state"],
-            attempts=tuple(_attempt(item) for item in attempts),
-            failure=Failure.model_validate_json(failure) if failure is not None else None,
-            created_at=row["created_at"],
-            completed_at=row["completed_at"],
-        )
+        by_job: dict[UUID, list[Attempt]] = {}
+        for item in attempts:
+            by_job.setdefault(item["job_id"], []).append(_attempt(item))
+        return [_job(row, by_job.get(row["id"], [])) for row in rows]
 
     async def insert_access_key(self, key: AccessKey, token_hash: str) -> None:
         await self._pool.execute(
@@ -365,19 +357,21 @@ class PostgresStore:
         )
 
     async def job_cost(self, job_id: UUID) -> JobCost:
-        attempts = await self._pool.fetchval(
-            "SELECT count(*) FROM lpb_attempts WHERE job_id = $1",
+        opened = await self._pool.fetchval(
+            "SELECT count(*) FROM lpb_attempts WHERE job_id = $1 AND cardinality(auth_ids) > 0",
             job_id,
         )
+        # An unprovisioned actor paid with the default credential, whose
+        # allocation is not the actor's, so only the session id can match.
         rows = await self._pool.fetch(
             """
             SELECT DISTINCT u.id, u.computed_fee_eth, u.computed_fee_usd
             FROM lpb_jobs j
-            JOIN lpb_actors a ON a.actor_id = j.actor_id
+            LEFT JOIN lpb_actors a ON a.actor_id = j.actor_id
             JOIN lpb_attempts t ON t.job_id = j.id
             JOIN lpb_usage_events u
               ON u.payment_session_id = ANY(t.auth_ids)
-             AND u.allocation_id = a.allocation_id
+             AND (a.allocation_id IS NULL OR u.allocation_id = a.allocation_id)
              AND u.status = 'applied'
             WHERE j.id = $1
             """,
@@ -386,7 +380,7 @@ class PostgresStore:
         if not rows:
             return JobCost(
                 job_id=job_id,
-                status="pending" if attempts else "none",
+                status="pending" if opened else "none",
                 fee_eth=None,
                 fee_usd=None,
                 event_count=0,
@@ -430,6 +424,24 @@ def _actor(row: asyncpg.Record) -> ProvisionedActor:
         grant_id=row["grant_id"],
         allocation_id=row["allocation_id"],
         api_key_ref=row["api_key_ref"],
+    )
+
+
+def _job(row: asyncpg.Record, attempts: list[Attempt]) -> Job:
+    failure = row["failure"]
+    return Job(
+        id=row["id"],
+        actor_id=row["actor_id"],
+        application_id=row["application_id"],
+        operation_ref=row["operation_ref"],
+        app=row["app"],
+        capability=row["capability"],
+        model=row["model"],
+        state=row["state"],
+        attempts=tuple(attempts),
+        failure=Failure.model_validate_json(failure) if failure is not None else None,
+        created_at=row["created_at"],
+        completed_at=row["completed_at"],
     )
 
 

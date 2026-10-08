@@ -53,7 +53,34 @@ class JobService:
         """
         require(actor, "jobs:run")
         job = await self._create_job(actor, request)
+        attempts: list[Attempt] = []
+        try:
+            return await self._dispatch(job, actor, request, attempts)
+        except JobFailed:
+            raise
+        except BaseException as exc:
+            # Never leave the job running. Once a payment went out the result is unknown.
+            paid = any(attempt.payment_sent for attempt in attempts)
+            failure = Failure(
+                kind="runner_error",
+                message=f"engine error: {type(exc).__name__}",
+                status_code=None,
+                body=None,
+                payment_sent=paid,
+            )
+            try:
+                await self._finish(job, "uncertain" if paid else "failed", failure, attempts)
+            except Exception:
+                _LOG.exception("could not close job %s", job.id)
+            raise
 
+    async def _dispatch(
+        self,
+        job: Job,
+        actor: ActorContext,
+        request: JobRequest,
+        attempts: list[Attempt],
+    ) -> JobResult:
         candidates = self._discovery.runners(request.app)
         if not candidates:
             failure = Failure(
@@ -67,7 +94,6 @@ class JobService:
 
         credential = await self._credentials.credential(actor)
         ordered = list(self._selection.order(candidates, request))[: max(1, request.max_attempts)]
-        attempts: list[Attempt] = []
         for number, runner in enumerate(ordered, start=1):
             started = self._clock.now()
             try:

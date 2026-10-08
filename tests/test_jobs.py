@@ -181,7 +181,7 @@ async def test_all_runners_refused_is_a_refused_failure_with_cost_none() -> None
         await h.jobs.run(ALICE, request)
     assert info.value.job.failure is not None
     assert info.value.job.failure.kind == "unreachable"
-    assert (await h.store.job_cost(info.value.job.id)).status == "pending"
+    assert (await h.store.job_cost(info.value.job.id)).status == "none"  # no payment session opened
 
 
 async def test_no_runner_for_the_app_is_no_offering() -> None:
@@ -256,3 +256,46 @@ async def test_job_cost_joins_on_auth_id_and_the_actors_allocation() -> None:
     assert spend.event_count == 3  # every applied row on alice's allocation, whichever job
     with pytest.raises(AccessDenied):
         await h.costs.for_actor(BOB, "alice")
+
+
+class _Boom:
+    async def call(self, runner: Runner, request: JobRequest, credential: str | None) -> RunnerReply:
+        raise RuntimeError("transport bug")
+
+
+async def test_unexpected_error_closes_the_job_instead_of_leaving_it_running() -> None:
+    h = await Harness([]).ready()
+    h.jobs._transport = _Boom()
+    with pytest.raises(RuntimeError):
+        await h.jobs.run(ALICE, JobRequest(app=APP, operation_ref="o-9"))
+    job = await h.store.job_by_operation_ref("shop", "alice", "o-9")
+    assert job is not None
+    assert job.state == "failed"
+    assert job.completed_at is not None
+
+
+async def test_default_credential_job_cost_matches_on_the_session() -> None:
+    h = await Harness([_reply(("auth-1",))]).ready()
+    result = await h.jobs.run(BOB, JobRequest(app=APP))  # bob has no allocation of his own
+    await h.store.apply((_row("r1", "auth-1", allocation_id="alloc-operator"),), SyncCheckpoint(resume_cursor=None))
+    assert (await h.costs.for_job(BOB, result.job.id)).status == "observed"
+
+
+def test_job_path_cannot_leave_the_runner_host() -> None:
+    assert JobRequest(app=APP, path="/hello").path == "/hello"
+    with pytest.raises(ValueError):
+        JobRequest(app=APP, path="@169.254.169.254/latest/meta-data")
+
+
+async def test_offering_range_compares_one_currency_and_unit() -> None:
+    def priced(url: str, amount: str, currency: str) -> Runner:
+        return _runner(url).model_copy(
+            update={"rate": NetworkRate(amount=Decimal(amount), currency=currency, unit="hour")}
+        )
+
+    runners = [priced("a", "2", "usd"), priced("b", "1", "usd"), priced("c", "0.001", "eth")]
+    h = await Harness([], runners=runners).ready()
+    offering = h.discovery.offerings()[0]
+    assert offering.rate_low is not None and offering.rate_high is not None
+    assert (offering.rate_low.amount, offering.rate_high.amount) == (Decimal("1"), Decimal("2"))
+    assert offering.rate_high.currency == "usd"

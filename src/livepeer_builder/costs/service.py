@@ -16,7 +16,8 @@ class CostService:
     """Observed network cost, keyed by (allocation_id, payment_session_id).
 
     A job's cost is the applied usage rows whose payment_session_id is one of
-    the job's recorded auth_ids and whose allocation is the actor's. An actor's
+    the job's recorded auth_ids and whose allocation is the actor's (any
+    allocation when the actor paid with the default credential). An actor's
     spend is every applied row on the actor's allocation.
     """
 

@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from livepeer_builder.contracts import UsagePage, UsageRow
-from livepeer_builder.errors import BatteriesError, CursorMismatch
+from livepeer_builder.errors import BatteriesError, CursorMismatch, ProviderUnavailable
 
 _TOKEN_HEADER = "Livepeer-Clearinghouse-Token"
 _STATUSES = {"applied", "quarantined", "ignored", "duplicate"}
@@ -25,7 +25,7 @@ class BatteriesClient:
         self,
         base_url: str,
         token: str,
-        engine_id: str = "livepeer-builder",
+        engine_id: str = "livepeer-core",  # part of every idempotency key; changing it breaks retries
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
@@ -108,7 +108,10 @@ class BatteriesClient:
         headers: dict[str, str] | None = None,
         params: dict[str, str] | None = None,
     ) -> Any:
-        response = await self._client.request(method, path, json=json, headers=headers, params=params)
+        try:
+            response = await self._client.request(method, path, json=json, headers=headers, params=params)
+        except httpx.TransportError as exc:
+            raise ProviderUnavailable(f"Batteries unreachable: {exc}") from exc
         if response.status_code >= 400:
             raise BatteriesError(response.status_code, _error_message(response))
         if not response.content:
@@ -140,7 +143,10 @@ class BatteriesUsageSource:
         params = {**self._filters, "limit": str(limit)}
         if cursor:
             params["cursor"] = cursor
-        response = await self._client.get("/v1/usage", params=params)
+        try:
+            response = await self._client.get("/v1/usage", params=params)
+        except httpx.TransportError as exc:
+            raise ProviderUnavailable(f"Batteries unreachable: {exc}") from exc
         if response.status_code == 400 and "cursor" in _error_message(response):
             raise CursorMismatch(_error_message(response))
         if response.status_code >= 400:

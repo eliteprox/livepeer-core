@@ -212,7 +212,7 @@ async def test_spend_job_and_manifest_queries(store: PostgresStore) -> None:
     other = uuid4()
     await store.create_job(_job(other, "bob"))
     await store.record_attempt(_attempt(other, auth_ids=(), manifest_id=forged))
-    assert (await store.job_cost(other)).status == "pending"
+    assert (await store.job_cost(other)).status == "none"  # no auth_ids, so nothing will arrive
     forged_cost = await store.manifest_cost(forged)
     assert forged_cost.event_count == 2
     assert forged_cost.allocation_ids == ("alloc-alice", "alloc-bob")

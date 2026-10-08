@@ -36,3 +36,21 @@ CREATE TABLE lpb_access_keys (
   created_at timestamptz NOT NULL,
   revoked_at timestamptz
 );
+
+-- Rows written before this migration used the proof scripts' outcome names.
+UPDATE lpb_attempts SET outcome = CASE outcome
+  WHEN 'orch_rejected' THEN 'http'
+  WHEN 'signed' THEN 'succeeded'
+  WHEN 'reserved' THEN 'succeeded'
+  ELSE outcome
+END;
+
+ALTER TABLE lpb_attempts ADD CONSTRAINT lpb_attempts_outcome_check
+  CHECK (outcome IN ('succeeded', 'refused', 'unreachable', 'payment', 'timeout', 'http'));
+
+-- Jobs that existed before this migration have ended; none is still running.
+UPDATE lpb_jobs j SET
+  state = CASE WHEN EXISTS (
+    SELECT 1 FROM lpb_attempts t WHERE t.job_id = j.id AND t.outcome = 'succeeded'
+  ) THEN 'succeeded' ELSE 'failed' END,
+  completed_at = j.created_at;

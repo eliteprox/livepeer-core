@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -28,6 +29,7 @@ from livepeer_builder.store.postgres import PostgresStore
 from livepeer_builder.testing.fakes import MemoryStore, StaticDiscoverySource
 
 _ENV_PREFIX = "LIVEPEER_"
+_LOG = logging.getLogger(__name__)
 
 
 class SystemClock:
@@ -47,7 +49,7 @@ class LivepeerSettings(Contract):
     cost_sync_interval_s: float = 30.0
     database_url: str | None = None  # None selects the in-memory store
     admin_token: SecretStr | None = None  # bootstraps AccessService in service mode
-    engine_id: str = "livepeer-builder"  # namespaces Batteries idempotency keys
+    engine_id: str = "livepeer-core"  # namespaces Batteries idempotency keys; keep it stable
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "LivepeerSettings":
@@ -170,8 +172,12 @@ class BuilderEngine:
         self._tasks = []
         for closer in self._closers:
             close = getattr(closer, "aclose", None) or getattr(closer, "close", None)
-            if close is not None:
+            if close is None:
+                continue
+            try:
                 await close()
+            except Exception:
+                _LOG.exception("closing %r failed", closer)
 
     def health(self) -> EngineHealth:
         snapshot = self.discovery.snapshot
@@ -193,4 +199,9 @@ async def _default_store(database_url: str | None) -> EngineStore:
 def _default_discovery_source(settings: LivepeerSettings) -> DiscoverySource:
     if settings.signer_url is None and settings.discovery_url is None:
         return StaticDiscoverySource([])
-    return SignerDiscoverySource(signer_url=settings.signer_url, discovery_url=settings.discovery_url)
+    credential = settings.signer_credential.get_secret_value() if settings.signer_credential else None
+    return SignerDiscoverySource(
+        signer_url=settings.signer_url,
+        discovery_url=settings.discovery_url,
+        signer_headers={"Authorization": f"Bearer {credential}"} if credential else None,
+    )

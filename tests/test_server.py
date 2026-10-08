@@ -6,6 +6,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
+from livepeer_builder.adapters.batteries import BatteriesClient
 from livepeer_builder.contracts import NetworkRate, ProvisionedActor, Runner, RunnerReply
 from livepeer_builder.engine import BuilderEngine, LivepeerSettings
 from livepeer_builder.errors import RunnerCallError
@@ -138,3 +139,40 @@ async def test_admin_routes_and_health(client) -> None:
     alice = await _alice_key(http)
     assert (await http.get("/v1/spend", params={"actor_id": "bob"}, headers=alice)).status_code == 403
     assert (await http.post("/v1/keys", json={"actor_id": "x", "scopes": []}, headers=alice)).status_code == 403
+
+
+async def test_uncertain_job_does_not_invite_a_retry(client) -> None:
+    http, transport, _ = client
+    transport.script.append(RunnerCallError("unreachable", "reset", payment_sent=True, auth_ids=("auth-1",)))
+    alice = await _alice_key(http)
+    response = await http.post("/v1/jobs", json={"app": APP}, headers=alice)
+    assert response.status_code == 504
+    assert "Retry-After" not in response.headers
+
+
+async def test_unknown_scope_and_off_host_path_are_rejected(client) -> None:
+    http, _, _ = client
+    typo = await http.post("/v1/keys", json={"actor_id": "alice", "scopes": ["job:run"]}, headers=ADMIN)
+    assert typo.status_code == 422
+    alice = await _alice_key(http)
+    response = await http.post("/v1/jobs", json={"app": APP, "path": "@evil.example"}, headers=alice)
+    assert response.status_code == 422
+
+
+async def test_batteries_client_errors_keep_their_status() -> None:
+    def batteries(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "grant not found"})
+
+    mock = httpx.AsyncClient(transport=httpx.MockTransport(batteries), base_url="http://batteries")
+    client = BatteriesClient("http://batteries", "t", client=mock)
+    engine = await BuilderEngine.from_settings(
+        LivepeerSettings(admin_token="root"),  # type: ignore[arg-type]
+        store=MemoryStore(),
+        discovery_source=StaticDiscoverySource([]),
+        batteries=client,
+        clock=FixedClock(),
+    )
+    app = create_app(engine, manage_lifecycle=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        body = {"actor_id": "alice", "grant_id": "missing", "amount_eth": "1"}
+        assert (await http.post("/v1/allocations", json=body, headers=ADMIN)).status_code == 404

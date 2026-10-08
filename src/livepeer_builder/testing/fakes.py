@@ -184,14 +184,14 @@ class MemoryStore(MemoryCostSyncStore):
             row
             for row in self.rows.values()
             if row.status == "applied"
-            and actor is not None
-            and row.allocation_id == actor.allocation_id
+            and job is not None
+            and (actor is None or row.allocation_id == actor.allocation_id)
             and row.payment_session_id in auth_ids
         ]
         if not rows:
             return JobCost(
                 job_id=job_id,
-                status="pending" if attempts else "none",
+                status="pending" if auth_ids else "none",
                 fee_eth=None,
                 fee_usd=None,
                 event_count=0,
@@ -241,6 +241,8 @@ class MemoryStore(MemoryCostSyncStore):
         return None
 
     async def revoke_access_key(self, key_id: str, revoked_at: datetime) -> None:
+        if key_id not in self.keys:
+            return
         key, stored_hash = self.keys[key_id]
         if key.revoked_at is None:
             self.keys[key_id] = (key.model_copy(update={"revoked_at": revoked_at}), stored_hash)

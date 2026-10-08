@@ -31,18 +31,18 @@ class SignerDiscoverySource:
         *,
         signer_url: str | None = None,
         discovery_url: str | None = None,
-        headers: dict[str, str] | None = None,
+        signer_headers: dict[str, str] | None = None,
     ) -> None:
         self._signer_url = signer_url
         self._discovery_url = discovery_url
-        self._headers = headers
+        self._signer_headers = signer_headers
 
     async def fetch(self) -> tuple[Runner, ...]:
+        # The signer bearer goes to the signer only, never to a separate discovery URL.
         entries = await discover_runners(
             signer_url=self._signer_url,
-            signer_headers=self._headers,
+            signer_headers=self._signer_headers,
             discovery_url=self._discovery_url,
-            discovery_headers=self._headers,
         )
         return tuple(runners_from_entries(entries))
 
@@ -107,9 +107,10 @@ class SdkRunnerTransport:
             raw={},
             price_info=_price_info(runner.rate),
         )
+        url = (runner.url.rstrip("/") + request.path).strip()  # call_runner strips it too
         try:
             result = await call_runner(
-                runner.url.rstrip("/") + request.path,
+                url,
                 runner=instance,
                 payload=request.payload,
                 method=request.method,
@@ -119,7 +120,7 @@ class SdkRunnerTransport:
                 max_payment_challenge_retries=self._retries,
             )
         except LivepeerGatewayError as error:
-            raise _call_error(error) from error
+            raise _call_error(error, url) from error
         except (aiohttp.ClientError, OSError) as error:
             raise RunnerCallError(_network_kind(error), str(error), payment_sent=False) from error
         content = result.content if result.content is not None else json.dumps(result.data).encode()
@@ -134,15 +135,16 @@ class SdkRunnerTransport:
         )
 
 
-def _call_error(error: LivepeerGatewayError) -> RunnerCallError:
+def _call_error(error: LivepeerGatewayError, runner_url: str) -> RunnerCallError:
     kind: AttemptOutcome
     status: int | None = None
     body: str | None = None
-    if isinstance(error, LivepeerHTTPError):
+    if isinstance(error, LivepeerHTTPError) and error.url == runner_url:
         status = error.status_code
         body = error.body[:_BODY_LIMIT] if error.body else None
         kind = "refused" if status == 503 else "http"
-    elif isinstance(error, _PAYMENT_ERRORS) or "payment" in str(error).lower():
+    elif isinstance(error, (*_PAYMENT_ERRORS, LivepeerHTTPError)):
+        # An HTTP error from any other URL came from the signer.
         kind = "payment"
     else:
         kind = _network_kind(error)
@@ -173,6 +175,8 @@ def _rate(value: object) -> NetworkRate | None:
     try:
         amount = Decimal(str(value.get("price")))
     except InvalidOperation:
+        return None
+    if not amount.is_finite() or amount < 0:
         return None
     return NetworkRate(
         amount=amount,

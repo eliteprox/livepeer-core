@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections import Counter
 from collections.abc import Sequence
 from datetime import timedelta
 
@@ -76,12 +77,12 @@ class DiscoveryService:
         return self._snapshot
 
     async def run(self, stop: asyncio.Event) -> None:
+        """Refresh once per interval until ``stop`` is set. Call ``refresh`` first for an immediate snapshot."""
         while not stop.is_set():
-            await self.refresh()
             try:
                 await asyncio.wait_for(stop.wait(), timeout=self._interval_s)
             except TimeoutError:
-                continue
+                await self.refresh()
 
     def runners(self, app: str) -> list[Runner]:
         return [runner for runner in self._snapshot.runners if runner.app == app]
@@ -98,7 +99,7 @@ class DiscoveryService:
         offerings = []
         for name in sorted(by_app):
             group = by_app[name]
-            rates = sorted((r.rate for r in group if r.rate is not None), key=_rate_key)
+            rates = _comparable_rates(group)
             offerings.append(
                 Offering(
                     app=name,
@@ -112,5 +113,11 @@ class DiscoveryService:
         return offerings
 
 
-def _rate_key(rate: NetworkRate) -> tuple[str, str, object]:
-    return (rate.currency, rate.unit, rate.amount)
+def _comparable_rates(group: list[Runner]) -> list[NetworkRate]:
+    """The group's rates in its most common (currency, unit), cheapest first; other units do not compare."""
+    rates = [runner.rate for runner in group if runner.rate is not None]
+    if not rates:
+        return []
+    common, _ = Counter((rate.currency, rate.unit) for rate in rates).most_common(1)[0]
+    same_unit = [rate for rate in rates if (rate.currency, rate.unit) == common]
+    return sorted(same_unit, key=lambda rate: rate.amount)

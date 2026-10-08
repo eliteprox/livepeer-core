@@ -23,10 +23,11 @@ from livepeer_builder.contracts import (
     Offering,
     ProvisionedActor,
     Runner,
+    Scope,
     SyncReport,
 )
 from livepeer_builder.engine import BuilderEngine
-from livepeer_builder.errors import AccessDenied, JobFailed, OperationExists, ProviderUnavailable
+from livepeer_builder.errors import AccessDenied, BatteriesError, JobFailed, OperationExists, ProviderUnavailable
 from livepeer_builder.jobs.service import require
 
 JOB_ID_HEADER = "Livepeer-Job-Id"
@@ -40,11 +41,13 @@ _FAILURE_STATUS = {
     "runner_error": 502,
 }
 _RETRY_AFTER = {"refused": "5", "unreachable": "5", "payment": "10"}
+# Batteries answers that describe the caller's request; any other status is an upstream fault.
+_BATTERIES_CLIENT_STATUS = frozenset({400, 404, 409, 422})
 
 
 class IssueKeyBody(BaseModel):
     actor_id: str
-    scopes: list[str]
+    scopes: list[Scope]
     application_id: str = "default"
     label: str = ""
 
@@ -86,6 +89,11 @@ def create_app(engine: BuilderEngine, *, manage_lifecycle: bool = True) -> FastA
     @app.exception_handler(ProviderUnavailable)
     async def _provider(_: Request, exc: ProviderUnavailable) -> Response:
         return JSONResponse({"error": str(exc)}, status_code=503)
+
+    @app.exception_handler(BatteriesError)
+    async def _batteries(_: Request, exc: BatteriesError) -> Response:
+        status = exc.status_code if exc.status_code in _BATTERIES_CLIENT_STATUS else 502
+        return JSONResponse({"error": str(exc)}, status_code=status)
 
     @app.exception_handler(OperationExists)
     async def _exists(_: Request, exc: OperationExists) -> Response:
@@ -184,7 +192,8 @@ def failure_response(job: Job) -> Response:
         payment_sent=False,
     )
     headers = {JOB_ID_HEADER: str(job.id)}
-    if failure.kind in _RETRY_AFTER:
+    # A retry is only safe when no payment went out: otherwise it could pay and run twice.
+    if failure.kind in _RETRY_AFTER and job.state != "uncertain" and not failure.payment_sent:
         headers["Retry-After"] = _RETRY_AFTER[failure.kind]
     if job.state == "uncertain":
         status = 504

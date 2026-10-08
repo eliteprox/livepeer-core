@@ -61,6 +61,8 @@ class BatteriesProvider:
         target = actor_id or actor.actor_id
         if target != actor.actor_id:
             require(actor, "admin")
+        else:
+            require(actor, "jobs:read")
         stored = await self._store.actor(target)
         if stored is None:
             raise AccessDenied(f"actor {target!r} is not provisioned")

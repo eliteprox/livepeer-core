@@ -70,7 +70,9 @@ class CursorMismatch(Exception):
     """Batteries rejected a usage cursor for this route or filter set."""
 
 
-class BatteriesError(ProviderUnavailable):
+class BatteriesError(EngineError):
+    """Batteries answered with an error status. Transport failures raise ProviderUnavailable."""
+
     def __init__(
         self,
         status_code: int,

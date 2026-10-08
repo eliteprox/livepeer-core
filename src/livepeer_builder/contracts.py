@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Contract(BaseModel):
@@ -86,14 +86,22 @@ class Offering(Contract):
 
 class JobRequest(Contract):
     app: str  # the runner app a discovery entry advertises
-    path: str = ""  # appended to the runner URL
-    method: str = "POST"
+    path: str = ""  # appended to the runner URL; must start with "/"
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
     payload: dict[str, Any] | None = None
     operation_ref: str | None = None  # the caller's key; makes a retry safe
     capability: str | None = None  # labels only; the engine does not resolve them
     model: str | None = None
     max_attempts: int = 3
     timeout_s: float = 300.0
+
+    @field_validator("path")
+    @classmethod
+    def _stays_on_the_runner(cls, value: str) -> str:
+        # A leading "/" ends the URL authority, so the call cannot leave the runner's host.
+        if value and not value.startswith("/"):
+            raise ValueError("path must be empty or start with '/'")
+        return value
 
 
 AttemptOutcome = Literal["succeeded", "refused", "unreachable", "payment", "timeout", "http"]

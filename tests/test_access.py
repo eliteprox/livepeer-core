@@ -38,3 +38,7 @@ async def test_only_admin_issues_keys() -> None:
         await access.issue_key(non_admin, "bob", scopes=["jobs:run"])
     with pytest.raises(AccessDenied):
         await access.authenticate("anything")  # no admin token configured
+
+
+async def test_revoking_an_unknown_key_is_a_no_op() -> None:
+    await AccessService(MemoryStore(), FixedClock()).revoke_key(ADMIN, "missing")

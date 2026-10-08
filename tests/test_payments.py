@@ -1,7 +1,10 @@
 """The signer credential stays on payments. Access keys never carry it."""
 
+import pytest
+
 from livepeer_builder.access.service import AccessService
 from livepeer_builder.contracts import ActorContext, ProvisionedActor
+from livepeer_builder.errors import AccessDenied
 from livepeer_builder.payments.provider import BatteriesProvider
 from livepeer_builder.testing.fakes import FixedClock, MemoryStore
 
@@ -37,3 +40,9 @@ async def test_access_token_does_not_carry_the_payment_key() -> None:
     actor = await access.authenticate(issued.token)
     assert "key-alice" not in actor.model_dump_json()
     assert actor.attributes == {"key_id": issued.key.key_id}
+
+
+async def test_own_allowance_needs_the_jobs_read_scope() -> None:
+    payments = BatteriesProvider(MemoryStore(), None)
+    with pytest.raises(AccessDenied):
+        await payments.allowance(ActorContext(actor_id="alice", scopes=frozenset({"discover"})))
