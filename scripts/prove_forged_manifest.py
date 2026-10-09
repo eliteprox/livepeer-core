@@ -23,7 +23,7 @@ async def main() -> None:
             auth_ids=(auth_id,),
             manifest_id=manifest_id,
             payment_sent=False,
-            outcome="signed",
+            outcome="succeeded",  # sign-only: the ticket was signed, no runner was called
         )
         print(f"forged job {job_id} manifest {manifest_id} auth_id {auth_id}")
     finally:

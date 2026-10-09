@@ -1,6 +1,7 @@
 import json
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -12,7 +13,7 @@ from livepeer_gateway.errors import NoRunnerAvailableError
 from livepeer_gateway.remote_signer import LivePaymentChallenge, LivePaymentSession, get_signer_info
 from livepeer_gateway.selection import runner_selector
 
-from livepeer_builder.contracts import Attempt, ProvisionedActor
+from livepeer_builder.contracts import Attempt, AttemptOutcome, Job, ProvisionedActor
 from livepeer_builder.store.postgres import PostgresStore
 from settings import discovery_url, signer_url
 
@@ -25,7 +26,8 @@ class PaidCall:
     auth_ids: tuple[str, ...]
     manifest_id: str | None
     payment_sent: bool
-    outcome: str
+    outcome: AttemptOutcome
+    runner_url: str | None = None
 
 
 def headers_for(actor: ProvisionedActor) -> dict[str, str]:
@@ -44,11 +46,13 @@ async def hello_call(actor: ProvisionedActor) -> PaidCall:
         result = await cursor.next()
     except NoRunnerAvailableError as exc:
         if exc.auth_ids:
+            # The orchestrator rejected the ticket after the signer published it.
             return PaidCall(
                 auth_ids=tuple(exc.auth_ids),
                 manifest_id=None,
                 payment_sent=exc.payment_sent,
-                outcome="orch_rejected",
+                outcome="http",
+                runner_url=cursor.rejections[-1].url if cursor.rejections else None,
             )
         detail = "; ".join(f"{item.url}: {item.reason}" for item in cursor.rejections)
         raise RuntimeError(detail or str(exc)) from exc
@@ -57,6 +61,7 @@ async def hello_call(actor: ProvisionedActor) -> PaidCall:
         manifest_id=result.session_id or None,
         payment_sent=True,
         outcome="succeeded",
+        runner_url=result.runner_url,
     )
 
 
@@ -67,21 +72,44 @@ async def record(
     auth_ids: tuple[str, ...],
     manifest_id: str | None,
     payment_sent: bool,
-    outcome: str,
+    outcome: AttemptOutcome,
+    runner_url: str | None = None,
     job_id: UUID | None = None,
 ) -> UUID:
     job_id = job_id or uuid4()
+    now = datetime.now(UTC)
+    await store.create_job(
+        Job(
+            id=job_id,
+            actor_id=actor.actor_id,
+            application_id="proof",
+            operation_ref=None,
+            app=HELLO_APP,
+            capability=None,
+            model=None,
+            state="running",
+            attempts=(),
+            failure=None,
+            created_at=now,
+            completed_at=None,
+        )
+    )
     await store.record_attempt(
-        actor.actor_id,
         Attempt(
             job_id=job_id,
             number=1,
+            runner_url=runner_url,
+            orchestrator_url=None,
             auth_ids=auth_ids,
             manifest_id=manifest_id,
             payment_sent=payment_sent,
             outcome=outcome,
-        ),
+            status_code=None,
+            started_at=now,
+            ended_at=now,
+        )
     )
+    await store.finish_job(job_id, "succeeded" if outcome == "succeeded" else "failed", None, now)
     return job_id
 
 

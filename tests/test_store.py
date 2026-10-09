@@ -1,17 +1,53 @@
 import os
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
-from livepeer_builder.contracts import Attempt, ProvisionedActor, SyncCheckpoint, UsageRow
+from livepeer_builder.contracts import Attempt, Failure, Job, ProvisionedActor, SyncCheckpoint, UsagePage, UsageRow
 from livepeer_builder.costs.sync import CostSyncWorker
+from livepeer_builder.errors import OperationExists
 from livepeer_builder.store.postgres import PostgresStore
 from livepeer_builder.testing.fakes import ScriptedUsageSource
-from livepeer_builder.contracts import UsagePage
 
 pytestmark = pytest.mark.asyncio
+
+NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+
+
+def _job(job_id: UUID, actor_id: str, operation_ref: str | None = None) -> Job:
+    return Job(
+        id=job_id,
+        actor_id=actor_id,
+        application_id="test",
+        operation_ref=operation_ref,
+        app="livepeer-example/hello-world",
+        capability=None,
+        model=None,
+        state="running",
+        attempts=(),
+        failure=None,
+        created_at=NOW,
+        completed_at=None,
+    )
+
+
+def _attempt(job_id: UUID, *, auth_ids: tuple[str, ...], manifest_id: str | None) -> Attempt:
+    return Attempt(
+        job_id=job_id,
+        number=1,
+        runner_url="http://runner/hello",
+        orchestrator_url="https://orch:8935",
+        auth_ids=auth_ids,
+        manifest_id=manifest_id,
+        payment_sent=True,
+        outcome="succeeded",
+        status_code=200,
+        started_at=NOW,
+        ended_at=NOW,
+    )
 
 
 def _row(
@@ -40,7 +76,7 @@ def _row(
 
 
 @pytest.fixture
-async def store():
+async def store() -> AsyncIterator[PostgresStore]:
     dsn = os.environ.get(
         "DATABASE_URL",
         "postgresql://livepeer:livepeer@127.0.0.1:55432/livepeer",
@@ -57,6 +93,40 @@ async def store():
             """
         )
     await opened.close()
+
+
+async def test_job_round_trip_and_operation_ref(store: PostgresStore) -> None:
+    await store.record_actor(
+        ProvisionedActor(
+            actor_id="alice",
+            grant_id="grant-1",
+            allocation_id="alloc-alice",
+            api_key_ref="secret-alice",
+        )
+    )
+    assert (await store.actor("alice")) is not None
+    assert (await store.actor("nobody")) is None
+
+    job_id = uuid4()
+    await store.create_job(_job(job_id, "alice", operation_ref="order-1"))
+    await store.record_attempt(_attempt(job_id, auth_ids=("auth-1",), manifest_id="m-1"))
+    failure = Failure(kind="runner_error", message="boom", status_code=500, body="x", payment_sent=True)
+    await store.finish_job(job_id, "failed", failure, NOW)
+
+    loaded = await store.get_job(job_id)
+    assert loaded is not None
+    assert loaded.state == "failed"
+    assert loaded.failure == failure
+    assert loaded.attempts[0].auth_ids == ("auth-1",)
+    assert loaded.attempts[0].runner_url == "http://runner/hello"
+    assert await store.job_by_operation_ref("test", "alice", "order-1") == loaded
+    assert [job.id for job in await store.list_jobs("test", "alice")] == [job_id]
+
+    duplicate = _job(uuid4(), "alice", operation_ref="order-1")
+    with pytest.raises(OperationExists) as info:
+        await store.create_job(duplicate)
+    assert info.value.job.id == job_id
+    await store.create_job(_job(uuid4(), "bob-ref", operation_ref="order-1"))  # another actor may reuse it
 
 
 async def test_spend_job_and_manifest_queries(store: PostgresStore) -> None:
@@ -105,35 +175,17 @@ async def test_spend_job_and_manifest_queries(store: PostgresStore) -> None:
     assert bob.fee_eth == Decimal("0.01")
 
     job_id = uuid4()
-    await store.record_attempt(
-        "alice",
-        Attempt(
-            job_id=job_id,
-            number=1,
-            auth_ids=(alice_session,),
-            manifest_id="manifest-alice",
-            payment_sent=True,
-            outcome="succeeded",
-        ),
-    )
+    await store.create_job(_job(job_id, "alice"))
+    await store.record_attempt(_attempt(job_id, auth_ids=(alice_session,), manifest_id="manifest-alice"))
     cost = await store.job_cost(job_id)
     assert cost.status == "observed"
     assert cost.fee_eth == Decimal("0.02")
     assert cost.event_count == 2
 
     other = uuid4()
-    await store.record_attempt(
-        "bob",
-        Attempt(
-            job_id=other,
-            number=1,
-            auth_ids=(),
-            manifest_id=forged,
-            payment_sent=True,
-            outcome="succeeded",
-        ),
-    )
-    assert (await store.job_cost(other)).status == "pending"
+    await store.create_job(_job(other, "bob"))
+    await store.record_attempt(_attempt(other, auth_ids=(), manifest_id=forged))
+    assert (await store.job_cost(other)).status == "none"  # no auth_ids, so nothing will arrive
     forged_cost = await store.manifest_cost(forged)
     assert forged_cost.event_count == 2
     assert forged_cost.allocation_ids == ("alloc-alice", "alloc-bob")
