@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from livepeer_builder.contracts import (
@@ -71,12 +72,15 @@ def create_app(engine: BuilderEngine, *, manage_lifecycle: bool = True) -> FastA
 
     app = FastAPI(title="livepeer-builder", lifespan=lifespan)
     app.state.engine = engine
+    bearer = HTTPBearer(auto_error=False, scheme_name="bearerAuth")
 
-    async def actor_from(authorization: Annotated[str | None, Header()] = None) -> ActorContext:
-        if not authorization or not authorization.lower().startswith("bearer "):
+    async def actor_from(
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    ) -> ActorContext:
+        if credentials is None or not credentials.credentials.strip():
             raise HTTPException(401, "bearer token required")
         try:
-            return await engine.access.authenticate(authorization[7:].strip())
+            return await engine.access.authenticate(credentials.credentials.strip())
         except AccessDenied as exc:
             raise HTTPException(401, str(exc)) from exc
 
