@@ -8,6 +8,7 @@ from uuid import UUID
 import asyncpg
 
 from livepeer_builder.contracts import (
+    AccessKey,
     ActorSpend,
     Attempt,
     Failure,
@@ -240,6 +241,51 @@ class PostgresStore:
         for item in attempts:
             by_job.setdefault(item["job_id"], []).append(_attempt(item))
         return [_job(row, by_job.get(row["id"], [])) for row in rows]
+
+    async def insert_access_key(self, key: AccessKey, token_hash: str) -> None:
+        await self._pool.execute(
+            """
+            INSERT INTO lpb_access_keys (
+              key_id, token_hash, actor_id, application_id, scopes, label, created_at, revoked_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """,
+            key.key_id,
+            token_hash,
+            key.actor_id,
+            key.application_id,
+            list(key.scopes),
+            key.label,
+            key.created_at,
+            key.revoked_at,
+        )
+
+    async def access_key_by_hash(self, token_hash: str) -> AccessKey | None:
+        row = await self._pool.fetchrow(
+            """
+            SELECT key_id, actor_id, application_id, scopes, label, created_at, revoked_at
+            FROM lpb_access_keys WHERE token_hash = $1
+            """,
+            token_hash,
+        )
+        if row is None:
+            return None
+        return AccessKey(
+            key_id=row["key_id"],
+            actor_id=row["actor_id"],
+            application_id=row["application_id"],
+            scopes=tuple(row["scopes"]),
+            label=row["label"],
+            created_at=row["created_at"],
+            revoked_at=row["revoked_at"],
+        )
+
+    async def revoke_access_key(self, key_id: str, revoked_at: datetime) -> None:
+        await self._pool.execute(
+            "UPDATE lpb_access_keys SET revoked_at = coalesce(revoked_at, $2) WHERE key_id = $1",
+            key_id,
+            revoked_at,
+        )
 
     async def list_usage(self) -> list[UsageRow]:
         rows = await self._pool.fetch(
