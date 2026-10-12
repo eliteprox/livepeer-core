@@ -9,12 +9,14 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import pytest
 
 from conftest import FakeRunner, FakeSigner, free_port
 from livepeer_builder.contracts import ActorContext, JobRequest, NetworkRate, ProvisionedActor
 from livepeer_builder.engine import BuilderEngine, LivepeerSettings
 from livepeer_builder.errors import JobFailed
+from livepeer_builder.server.app import JOB_ID_HEADER, create_app
 from livepeer_builder.testing.fakes import MemoryStore
 
 APP = "livepeer-example/hello-world"
@@ -46,7 +48,9 @@ async def build_engine(signer: FakeSigner) -> AsyncIterator[BuildEngine]:
     """
     engines: list[BuilderEngine] = []
 
-    async def build(*runner_urls: str, signer_credential: str | None = "key-operator") -> BuilderEngine:
+    async def build(
+        *runner_urls: str, signer_credential: str | None = "key-operator", admin_token: str | None = None
+    ) -> BuilderEngine:
         signer.discovery = [
             {
                 "address": ORCH,
@@ -65,7 +69,11 @@ async def build_engine(signer: FakeSigner) -> AsyncIterator[BuildEngine]:
             )
         )
         engine = await BuilderEngine.from_settings(
-            LivepeerSettings(signer_url=signer.url, signer_credential=signer_credential),
+            LivepeerSettings(
+                signer_url=signer.url,
+                signer_credential=signer_credential,  # type: ignore[arg-type]
+                admin_token=admin_token,  # type: ignore[arg-type]
+            ),
             store=store,
             usage_source=signer,
         )
@@ -238,3 +246,34 @@ async def test_actor_without_a_credential_calls_unpaid(
     assert (attempt.outcome, attempt.payment_sent, attempt.auth_ids) == ("succeeded", False, ())
     assert "Livepeer-Payer-Address" not in runner.requests[0].headers
     assert signer.payment_requests == []
+
+
+async def test_http_job_reaches_the_runner_and_reports_its_cost(
+    signer: FakeSigner, make_runner: MakeRunner, build_engine: BuildEngine
+) -> None:
+    runner = await make_runner(statuses=[402, 200])
+    engine = await build_engine(runner.url, admin_token="root")
+    app = create_app(engine, manage_lifecycle=False)
+    admin = {"Authorization": "Bearer root"}
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        issued = await http.post(
+            "/v1/keys", json={"actor_id": "alice", "scopes": ["jobs:run", "jobs:read"]}, headers=admin
+        )
+        assert issued.status_code == 201, issued.text
+        alice = {"Authorization": f"Bearer {issued.json()['token']}"}
+
+        response = await http.post("/v1/jobs", json={"app": APP, "path": "/hello", "payload": {}}, headers=alice)
+        assert response.status_code == 200, response.text
+        assert response.json() == {"greeting": "hello", "n": 2}
+        job_id = response.headers[JOB_ID_HEADER]
+
+        # The access key authenticates; the stored Batteries key pays.
+        assert signer.payment_headers[0]["Authorization"] == "Bearer key-alice"
+        job = (await http.get(f"/v1/jobs/{job_id}", headers=alice)).json()
+        assert job["attempts"][0]["auth_ids"] == ["auth-1"]
+
+        assert (await http.post("/v1/costs/sync", headers=admin)).status_code == 200
+        cost = (await http.get(f"/v1/jobs/{job_id}/cost", headers=alice)).json()
+        assert cost["status"] == "observed"
+        assert Decimal(str(cost["fee_eth"])) == Decimal("0.01")
