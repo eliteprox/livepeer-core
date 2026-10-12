@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -17,8 +20,9 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_USER: livepeer
-          POSTGRES_PASSWORD: livepeer
           POSTGRES_DB: livepeer
+          # A throwaway database on the runner; nothing to protect with a password.
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -27,18 +31,16 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://livepeer:livepeer@127.0.0.1:5432/livepeer
+      DATABASE_URL: postgresql://livepeer@127.0.0.1:5432/livepeer
       # Postgres-backed tests fail instead of skipping.
       REQUIRE_POSTGRES: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version-file: .python-version
           enable-cache: true
-      - name: Lockfile is current
-        run: uv lock --check
+      # The only build step: this project and the livepeer-gateway commit uv.lock pins.
       - name: Install
-        run: uv sync --frozen --all-groups
+        run: uv sync --locked --all-groups
       - name: Test
-        run: uv run --frozen --all-groups pytest -ra
+        run: uv run --no-sync pytest -ra
