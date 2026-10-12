@@ -529,12 +529,12 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
 ]
-proof = [{ name = "livepeer-gateway", git = "https://github.com/eliteprox/livepeer-python-gateway.git?rev=3250c08cb6424d339614f1e9095064fbe7e6da6e" }]
+proof = [{ name = "livepeer-gateway", git = "https://github.com/eliteprox/livepeer-python-gateway.git?rev=d8e2b80048feae7f831be1f10206f63fa73b963e" }]
 
 [[package]]
 name = "livepeer-gateway"
 version = "1.0.0"
-source = { git = "https://github.com/eliteprox/livepeer-python-gateway.git?rev=3250c08cb6424d339614f1e9095064fbe7e6da6e#3250c08cb6424d339614f1e9095064fbe7e6da6e" }
+source = { git = "https://github.com/eliteprox/livepeer-python-gateway.git?rev=d8e2b80048feae7f831be1f10206f63fa73b963e#d8e2b80048feae7f831be1f10206f63fa73b963e" }
 dependencies = [
     { name = "aiohttp" },
     { name = "av" },
