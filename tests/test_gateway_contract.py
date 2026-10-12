@@ -5,6 +5,7 @@ how payment is signed, what reaches the runner, or what comes back to record
 fails here first.
 """
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -20,13 +21,14 @@ from livepeer_gateway.live_runner import (
 from livepeer_gateway.remote_signer import LivePaymentChallenge, LivePaymentSession
 
 from conftest import FakeRunner, FakeSigner, free_port
-from livepeer_builder.contracts import Attempt, ProvisionedActor, UsagePage
+from livepeer_builder.contracts import Attempt, Job, ProvisionedActor, UsagePage
 from livepeer_builder.costs.sync import CostSyncWorker
 from livepeer_builder.store.postgres import PostgresStore
 from livepeer_builder.testing.fakes import ScriptedUsageSource
 
 APP = "livepeer-example/hello-world"
 PRICE = LiveRunnerPriceInfo(price="0.0001", currency="usd", unit="fixed")
+NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
 
 
 def _instance(runner: FakeRunner) -> LiveRunnerInstance:
@@ -235,14 +237,12 @@ async def test_signed_auth_ids_attribute_cost_to_the_job_and_actor(
 
     # Recorded with the auth id the gateway returned: the job finds its charge.
     paid = await _paid_call(signer, runner)
-    observed_job = uuid4()
-    await store.record_attempt("alice", _attempt(observed_job, paid.auth_ids, paid.session_id))
+    observed_job = await _record(store, "alice", paid.auth_ids, paid.session_id)
 
     # Recorded with the manifest only: charged to alice, but no job can claim it.
     runner.statuses = [402, 200]
     unclaimed = await _paid_call(signer, runner)
-    pending_job = uuid4()
-    await store.record_attempt("alice", _attempt(pending_job, (), unclaimed.session_id))
+    unclaimed_job = await _record(store, "alice", (), unclaimed.session_id)
 
     # A client-chosen manifest still bills the key that signed it.
     forged = LivePaymentSession(
@@ -252,8 +252,7 @@ async def test_signed_auth_ids_attribute_cost_to_the_job_and_actor(
         challenge=_challenge(runner, manifest_id="forged-by-client"),
     )
     await forged.get_payment()
-    forged_job = uuid4()
-    await store.record_attempt("bob", _attempt(forged_job, (forged.auth_id,), "forged-by-client"))
+    forged_job = await _record(store, "bob", (forged.auth_id,), "forged-by-client")
 
     page = UsagePage(items=signer.usage_rows(fee_eth="0.01"), next_cursor="")
     report = await CostSyncWorker(ScriptedUsageSource([page]), store, {}).sync_once()
@@ -261,7 +260,8 @@ async def test_signed_auth_ids_attribute_cost_to_the_job_and_actor(
 
     cost = await store.job_cost(observed_job)
     assert (cost.status, cost.fee_eth, cost.event_count) == ("observed", Decimal("0.01"), 1)
-    assert (await store.job_cost(pending_job)).status == "pending"
+    # No auth id, nothing to claim: the job reports no cost while alice still paid.
+    assert (await store.job_cost(unclaimed_job)).status == "none"
     forged_cost = await store.job_cost(forged_job)
     assert (forged_cost.status, forged_cost.fee_eth) == ("observed", Decimal("0.01"))
 
@@ -271,12 +271,41 @@ async def test_signed_auth_ids_attribute_cost_to_the_job_and_actor(
     assert (await store.manifest_cost("forged-by-client")).allocation_ids == ("alloc-bob",)
 
 
-def _attempt(job_id: UUID, auth_ids: tuple[str, ...], manifest_id: str | None) -> Attempt:
-    return Attempt(
-        job_id=job_id,
-        number=1,
-        auth_ids=auth_ids,
-        manifest_id=manifest_id or None,
-        payment_sent=True,
-        outcome="succeeded",
+async def _record(
+    store: PostgresStore, actor_id: str, auth_ids: tuple[str, ...], manifest_id: str | None
+) -> UUID:
+    """Store one finished job with one attempt, as JobService does."""
+    job_id = uuid4()
+    await store.create_job(
+        Job(
+            id=job_id,
+            actor_id=actor_id,
+            application_id="contract",
+            operation_ref=None,
+            app=APP,
+            capability=None,
+            model=None,
+            state="running",
+            attempts=(),
+            failure=None,
+            created_at=NOW,
+            completed_at=None,
+        )
     )
+    await store.record_attempt(
+        Attempt(
+            job_id=job_id,
+            number=1,
+            runner_url=None,
+            orchestrator_url=None,
+            auth_ids=auth_ids,
+            manifest_id=manifest_id or None,
+            payment_sent=True,
+            outcome="succeeded",
+            status_code=200,
+            started_at=NOW,
+            ended_at=NOW,
+        )
+    )
+    await store.finish_job(job_id, "succeeded", None, NOW)
+    return job_id
