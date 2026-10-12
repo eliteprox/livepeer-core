@@ -39,8 +39,9 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
-      # The only build step: this project and the livepeer-gateway commit uv.lock pins.
+      # The only build step: this project and the livepeer-gateway commit that uv.lock
+      # pins by commit. A git dependency has no wheel, so it cannot use --no-build.
       - name: Install
         run: uv sync --locked --all-groups
       - name: Test
-        run: uv run --no-sync pytest -ra
+        run: uv run --no-sync --no-build pytest -ra
