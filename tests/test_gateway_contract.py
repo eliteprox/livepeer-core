@@ -9,16 +9,17 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
-from livepeer_gateway.errors import LivepeerHTTPError
+from livepeer_gateway.errors import LivepeerGatewayError, LivepeerHTTPError
 from livepeer_gateway.live_runner import (
     LiveRunnerCallResult,
     LiveRunnerInstance,
     LiveRunnerPriceInfo,
+    RunnerCallRecord,
     call_runner,
 )
 from livepeer_gateway.remote_signer import LivePaymentChallenge, LivePaymentSession
 
-from conftest import FakeRunner, FakeSigner
+from conftest import FakeRunner, FakeSigner, free_port
 from livepeer_builder.contracts import Attempt, ProvisionedActor, UsagePage
 from livepeer_builder.costs.sync import CostSyncWorker
 from livepeer_builder.store.postgres import PostgresStore
@@ -151,6 +152,71 @@ async def test_signer_refusal_happens_before_payment(signer: FakeSigner, runner:
     assert info.value.auth_ids == ()
     assert len(runner.requests) == 1
     assert signer.signs == []
+
+
+async def test_record_lists_each_attempt_of_a_paid_call(signer: FakeSigner, runner: FakeRunner) -> None:
+    runner.statuses = [402, 200]
+    record = RunnerCallRecord()
+
+    result = await call_runner(
+        f"{runner.url}/hello",
+        runner=_instance(runner),
+        payload={},
+        signer_url=signer.url,
+        signer_headers={"Authorization": "Bearer key-alice"},
+        record=record,
+    )
+
+    assert result.record is record
+    assert result.payment_sent is True
+    assert [a.outcome for a in record.attempts] == ["payment_required", "succeeded"]
+    assert [a.payment_sent for a in record.attempts] == [False, True]
+    assert [a.manifest_id for a in record.attempts] == ["", "manifest-1"]
+    assert [a.auth_id for a in record.attempts] == ["", "auth-1"]
+
+
+async def test_signer_failure_after_a_paid_attempt_still_reports_payment(
+    signer: FakeSigner, runner: FakeRunner
+) -> None:
+    # Tickets went out on the second attempt; the signer fails on the third.
+    runner.statuses = [402]
+    signer.fail_with = [None, 500]
+
+    with pytest.raises(LivepeerHTTPError) as info:
+        await _paid_call(signer, runner)
+
+    assert info.value.url.startswith(signer.url)
+    assert info.value.payment_sent is True
+    assert info.value.auth_ids == ("auth-1",)
+    assert info.value.record is not None
+    assert [a.outcome for a in info.value.record.attempts] == ["payment_required", "payment_required", "payment"]
+
+
+async def test_unreachable_runner_is_recorded_before_payment(signer: FakeSigner) -> None:
+    nowhere = f"http://127.0.0.1:{free_port()}/hello"
+
+    with pytest.raises(LivepeerGatewayError) as info:
+        await call_runner(
+            nowhere,
+            payload={},
+            signer_url=signer.url,
+            signer_headers={"Authorization": "Bearer key-alice"},
+        )
+
+    assert info.value.record is not None
+    assert info.value.record.outcome == "unreachable"
+    assert info.value.payment_sent is False
+
+
+async def test_slow_runner_is_a_timeout_not_unreachable(runner: FakeRunner) -> None:
+    runner.statuses = ["hang"]
+
+    with pytest.raises(LivepeerGatewayError) as info:
+        await call_runner(f"{runner.url}/hello", payload={}, timeout=0.2)
+
+    assert len(runner.requests) == 1
+    assert info.value.record is not None
+    assert info.value.record.outcome == "timeout"
 
 
 async def test_signed_auth_ids_attribute_cost_to_the_job_and_actor(
