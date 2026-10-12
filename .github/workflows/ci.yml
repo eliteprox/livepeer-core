@@ -46,5 +46,7 @@ jobs:
           uv sync --locked --all-groups --no-build
           --no-binary-package livepeer-builder
           --no-binary-package livepeer-gateway
+      - name: Type check
+        run: uv run --no-sync --no-build mypy
       - name: Test
         run: uv run --no-sync --no-build pytest -ra

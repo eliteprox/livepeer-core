@@ -25,6 +25,8 @@ The command waits until Postgres accepts connections. `REQUIRE_POSTGRES=1` fails
 
 `tests/test_gateway_contract.py` runs the pinned `livepeer-gateway` against an in-process signer and runner that speak the real wire formats. It checks what this package records from a paid call: the actor's key reaches the signer, the signer's `AuthID` comes back as `auth_ids`, `payment_sent` is set on failures after payment, and those auth ids attribute applied usage rows to the right job and allocation. A gateway pin bump that changes any of that fails CI.
 
+`tests/test_gateway_integration.py` runs the engine on the real SDK adapter against the same signer and runners: discovery through the signer, a paid job and its observed cost, failover only before payment, and how each runner or signer failure is classified.
+
 `deploy/` brings up a real-node stack (go-livepeer signer and orchestrator, Batteries, Redpanda) for manual runs, after `deploy/.env` is filled in:
 
 ```sh
