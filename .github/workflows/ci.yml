@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: livepeer
+          POSTGRES_PASSWORD: livepeer
+          POSTGRES_DB: livepeer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U livepeer"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://livepeer:livepeer@127.0.0.1:5432/livepeer
+      # Postgres-backed tests fail instead of skipping.
+      REQUIRE_POSTGRES: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version-file: .python-version
+          enable-cache: true
+      - name: Lockfile is current
+        run: uv lock --check
+      - name: Install
+        run: uv sync --frozen --all-groups
+      - name: Test
+        run: uv run --frozen --all-groups pytest -ra
