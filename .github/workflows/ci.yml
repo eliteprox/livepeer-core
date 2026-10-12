@@ -20,7 +20,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_USER: livepeer
-          POSTGRES_DB: livepeer
+          POSTGRES_DB: livepeer_test
           # A throwaway database on the runner; nothing to protect with a password.
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
@@ -31,7 +31,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://livepeer@127.0.0.1:5432/livepeer
+      DATABASE_URL: postgresql://livepeer@127.0.0.1:5432/livepeer_test
       # Postgres-backed tests fail instead of skipping.
       REQUIRE_POSTGRES: "1"
     steps:

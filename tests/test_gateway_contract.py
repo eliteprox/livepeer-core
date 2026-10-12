@@ -132,6 +132,10 @@ async def test_runner_error_after_payment_carries_the_auth_id(
     assert info.value.status_code == status
     assert info.value.payment_sent is True
     assert info.value.auth_ids == ("auth-1",)
+    unpaid, paid = runner.requests
+    assert "Livepeer-Payment" not in unpaid.headers
+    assert paid.headers["Livepeer-Payment"] == signer.payment
+    assert paid.headers["Livepeer-Segment"] == signer.seg_creds
 
 
 async def test_signer_refusal_happens_before_payment(signer: FakeSigner, runner: FakeRunner) -> None:

@@ -15,14 +15,35 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlparse
 
+import asyncpg
 import pytest
 from aiohttp import web
 
 from livepeer_builder.contracts import UsageRow
 from livepeer_builder.store.postgres import PostgresStore
 
-DEFAULT_DATABASE_URL = "postgresql://livepeer:livepeer@127.0.0.1:55432/livepeer"
+TEST_DATABASE = "livepeer_test"
+DEFAULT_DATABASE_URL = f"postgresql://livepeer:livepeer@127.0.0.1:55432/{TEST_DATABASE}"
+# Migration failures must fail the test. Only "cannot connect" is allowed to skip.
+_CONNECTION_ERRORS = (
+    OSError,
+    TimeoutError,
+    asyncpg.CannotConnectNowError,
+    asyncpg.InvalidCatalogNameError,
+    asyncpg.InvalidPasswordError,
+    asyncpg.PostgresConnectionError,
+    asyncpg.TooManyConnectionsError,
+)
+
+
+def _require_test_database(dsn: str) -> None:
+    name = urlparse(dsn).path.removeprefix("/").rstrip("/")
+    if name != TEST_DATABASE:
+        pytest.fail(
+            f"Refusing to migrate or truncate database {name!r}; tests only use {TEST_DATABASE!r}"
+        )
 
 
 @pytest.fixture
@@ -30,22 +51,30 @@ async def store() -> AsyncIterator[PostgresStore]:
     """A migrated store, emptied afterwards.
 
     Skips when Postgres is unreachable, unless REQUIRE_POSTGRES is set (CI).
+    Connects only to the database named livepeer_test, then truncates that database.
     """
     dsn = os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
+    _require_test_database(dsn)
     try:
         opened = await PostgresStore.connect(dsn)
-    except Exception as exc:
+    except _CONNECTION_ERRORS as exc:
         if os.environ.get("REQUIRE_POSTGRES"):
             pytest.fail(f"Postgres is required but not available: {exc}")
         pytest.skip(f"Postgres is not available: {exc}")
     yield opened
     async with opened._pool.acquire() as conn:
-        await conn.execute(
-            """
-            TRUNCATE lpb_attempts, lpb_jobs, lpb_usage_events, lpb_cost_cursor, lpb_actors
-            """
-        )
+        connected = await conn.fetchval("SELECT current_database()")
+        if connected == TEST_DATABASE:
+            await conn.execute(
+                """
+                TRUNCATE lpb_attempts, lpb_jobs, lpb_usage_events, lpb_cost_cursor, lpb_actors
+                """
+            )
     await opened.close()
+    if connected != TEST_DATABASE:
+        pytest.fail(
+            f"Refusing to truncate database {connected!r}; tests only use {TEST_DATABASE!r}"
+        )
 
 
 @asynccontextmanager
