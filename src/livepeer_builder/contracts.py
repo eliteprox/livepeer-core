@@ -104,13 +104,98 @@ class ProvisionedActor(Contract):
     api_key_ref: str
 
 
+# Jobs
+
+
+Scope = Literal["discover", "jobs:run", "jobs:read", "admin"]
+
+
+class ActorContext(Contract):
+    """Who is asking. Produced by the application's own auth or by AccessService.
+
+    ``actor_id`` is opaque to the engine and is the key that joins a job to the
+    actor's allocation. No payment secret is ever carried here; the engine
+    resolves the signer credential from the actor through a CredentialResolver.
+    """
+
+    actor_id: str
+    application_id: str = "default"
+    scopes: frozenset[str] = frozenset()
+    attributes: dict[str, str] = Field(default_factory=dict)
+
+
+AttemptOutcome = Literal["succeeded", "refused", "unreachable", "payment", "timeout", "http"]
+
+
 class Attempt(Contract):
     job_id: UUID
     number: int
+    runner_url: str | None
+    orchestrator_url: str | None
+    auth_ids: tuple[str, ...]  # signer payment sessions this attempt opened; the cost key
+    manifest_id: str | None  # the orchestrator's label; never a billing key
+    payment_sent: bool
+    outcome: AttemptOutcome
+    status_code: int | None
+    started_at: datetime
+    ended_at: datetime | None
+
+
+FailureKind = Literal[
+    "no_offering",
+    "refused",
+    "unreachable",
+    "payment",
+    "timeout",
+    "runner_rejected",
+    "runner_error",
+]
+
+
+class Failure(Contract):
+    kind: FailureKind
+    message: str
+    status_code: int | None
+    body: str | None  # the runner's own words, bounded
+    payment_sent: bool
+
+
+JobState = Literal["running", "succeeded", "failed", "uncertain"]
+
+
+class Job(Contract):
+    id: UUID
+    actor_id: str
+    application_id: str
+    operation_ref: str | None
+    app: str
+    capability: str | None
+    model: str | None
+    state: JobState
+    attempts: tuple[Attempt, ...]
+    failure: Failure | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class RunnerReply(Contract):
+    """What a RunnerTransport returns for one successful call."""
+
+    status_code: int
+    content: bytes
+    content_type: str
+    data: dict[str, Any] | None
     auth_ids: tuple[str, ...]
     manifest_id: str | None
     payment_sent: bool
-    outcome: str
+
+
+class JobResult(Contract):
+    job: Job
+    status_code: int
+    content: bytes
+    content_type: str
+    data: dict[str, Any] | None
 
 
 class JobCost(Contract):
