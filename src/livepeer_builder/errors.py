@@ -35,6 +35,10 @@ class JobFailed(EngineError):
         self.job = job
 
 
+class ProviderUnavailable(EngineError):
+    """The payment provider or its cost feed cannot be reached or is not configured."""
+
+
 class RunnerCallError(EngineError):
     """One runner call failed. Raised by a RunnerTransport.
 
@@ -66,7 +70,9 @@ class CursorMismatch(Exception):
     """Batteries rejected a usage cursor for this route or filter set."""
 
 
-class BatteriesError(Exception):
+class BatteriesError(EngineError):
+    """Batteries answered with an error status. Transport failures raise ProviderUnavailable."""
+
     def __init__(
         self,
         status_code: int,

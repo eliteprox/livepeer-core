@@ -4,8 +4,10 @@ from typing import Protocol
 from uuid import UUID
 
 from livepeer_builder.contracts import (
+    AccessKey,
     ActorContext,
     ActorSpend,
+    Allowance,
     Attempt,
     Failure,
     Job,
@@ -46,9 +48,31 @@ class RunnerTransport(Protocol):
 
 
 class CredentialResolver(Protocol):
-    """The bearer the signer authorizes for this actor. None means an unpaid call."""
+    """The bearer the signer authorizes for this actor. None means an unpaid call.
+
+    PaymentProvider implements this. The authenticator does not.
+    """
 
     async def credential(self, actor: ActorContext) -> str | None: ...
+
+
+class PaymentProvider(CredentialResolver, Protocol):
+    """Allowance and the signer credential. Access keys are a separate protocol."""
+
+    async def provision(
+        self,
+        actor: ActorContext,
+        actor_id: str,
+        *,
+        grant_id: str,
+        amount_eth: str,
+    ) -> ProvisionedActor: ...
+
+    async def allowance(self, actor: ActorContext, actor_id: str | None = None) -> Allowance: ...
+
+
+class Authenticator(Protocol):
+    async def authenticate(self, token: str) -> ActorContext: ...
 
 
 class UsageSource(Protocol):
@@ -87,3 +111,9 @@ class EngineStore(CostSyncStore, Protocol):
     async def actor_spend(self, actor_id: str) -> ActorSpend: ...
 
     async def manifest_cost(self, manifest_id: str) -> ManifestCost: ...
+
+    async def insert_access_key(self, key: AccessKey, token_hash: str) -> None: ...
+
+    async def access_key_by_hash(self, token_hash: str) -> AccessKey | None: ...
+
+    async def revoke_access_key(self, key_id: str, revoked_at: datetime) -> None: ...
