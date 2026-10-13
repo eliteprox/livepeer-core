@@ -2,25 +2,24 @@
 
 Cost-sync worker and Postgres store for attributing Batteries usage by allocation and signer auth id.
 
-Unit tests:
+Tests:
 
 ```sh
-DATABASE_URL=postgresql://livepeer:livepeer@127.0.0.1:55433/livepeer uv run pytest
+docker run -d --rm --name livepeer-test-pg -p 127.0.0.1:55432:5432 -e POSTGRES_USER=livepeer -e POSTGRES_PASSWORD=livepeer -e POSTGRES_DB=livepeer_test postgres:16
+until docker exec livepeer-test-pg pg_isready -U livepeer -d livepeer_test; do sleep 1; done
+REQUIRE_POSTGRES=1 uv run --all-groups pytest
 ```
 
-Real-node proof, after `deploy/.env` is filled in:
+The command waits until Postgres accepts connections. `REQUIRE_POSTGRES=1` fails the run when that database is missing. Unset `REQUIRE_POSTGRES` to skip the Postgres-backed tests. `DATABASE_URL` overrides the default `postgresql://livepeer:livepeer@127.0.0.1:55432/livepeer_test`. The store fixture migrates and truncates only the database named `livepeer_test`.
+
+`tests/test_gateway_contract.py` runs the pinned `livepeer-gateway` against an in-process signer and runner that speak the real wire formats. It checks what this package records from a paid call: the actor's key reaches the signer, the signer's `AuthID` comes back as `auth_ids`, `payment_sent` is set on failures after payment, and those auth ids attribute applied usage rows to the right job and allocation. A gateway pin bump that changes any of that fails CI.
+
+`deploy/` brings up a real-node stack (go-livepeer signer and orchestrator, Batteries, Redpanda) for manual runs, after `deploy/.env` is filled in:
 
 ```sh
 python3 deploy/render_secrets.py
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
-uv run --group proof python scripts/provision.py
-uv run --group proof python scripts/prove_allocation.py
-uv run --group proof python scripts/prove_job.py
-uv run --group proof python scripts/prove_forged_manifest.py
-uv run --group proof python scripts/report.py
 ```
-
-`prove_allocation.py` records manifest ids and ignores `auth_ids`. `prove_job.py` and `prove_forged_manifest.py` record the signer auth id from gateway commit `3250c08`.
 
 ## How a user meets a usage row
 

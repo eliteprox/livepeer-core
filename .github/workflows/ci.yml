@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: livepeer
+          POSTGRES_DB: livepeer_test
+          # A throwaway database on the runner; nothing to protect with a password.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U livepeer"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://livepeer@127.0.0.1:5432/livepeer_test
+      # Postgres-backed tests fail instead of skipping.
+      REQUIRE_POSTGRES: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      # --no-build stops every other package from running a setup script.
+      # These two have no wheel: this project, and the gateway commit uv.lock pins.
+      - name: Install
+        run: >-
+          uv sync --locked --all-groups --no-build
+          --no-binary-package livepeer-builder
+          --no-binary-package livepeer-gateway
+      - name: Test
+        run: uv run --no-sync --no-build pytest -ra

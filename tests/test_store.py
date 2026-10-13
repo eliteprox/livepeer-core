@@ -1,4 +1,3 @@
-import os
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
@@ -37,26 +36,6 @@ def _row(
         currency="eth" if allocation_id else None,
         created_at=datetime(2026, 10, 7, tzinfo=UTC),
     )
-
-
-@pytest.fixture
-async def store():
-    dsn = os.environ.get(
-        "DATABASE_URL",
-        "postgresql://livepeer:livepeer@127.0.0.1:55432/livepeer",
-    )
-    try:
-        opened = await PostgresStore.connect(dsn)
-    except Exception as exc:
-        pytest.skip(f"Postgres is not available: {exc}")
-    yield opened
-    async with opened._pool.acquire() as conn:
-        await conn.execute(
-            """
-            TRUNCATE lpb_attempts, lpb_jobs, lpb_usage_events, lpb_cost_cursor, lpb_actors
-            """
-        )
-    await opened.close()
 
 
 async def test_spend_job_and_manifest_queries(store: PostgresStore) -> None:
