@@ -1,7 +1,36 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from livepeer_builder.contracts import SyncCheckpoint, UsagePage, UsageRow
+from livepeer_builder.contracts import Runner, SyncCheckpoint, UsagePage, UsageRow
 from livepeer_builder.costs.sync import observed_fee_eth
+
+
+class FixedClock:
+    def __init__(
+        self,
+        start: datetime | None = None,
+    ) -> None:
+        self.current = start or datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+
+    def now(self) -> datetime:
+        return self.current
+
+    def advance(self, seconds: float) -> None:
+        self.current += timedelta(seconds=seconds)
+
+
+class StaticDiscoverySource:
+    def __init__(
+        self,
+        runners: list[Runner],
+    ) -> None:
+        self.runners = list(runners)
+        self.error: Exception | None = None
+
+    async def fetch(self) -> tuple[Runner, ...]:
+        if self.error is not None:
+            raise self.error
+        return tuple(self.runners)
 
 
 class ScriptedUsageSource:

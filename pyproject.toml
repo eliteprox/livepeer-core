@@ -27,7 +27,7 @@ proof = [
 ]
 
 [tool.uv.sources]
-livepeer-gateway = { git = "https://github.com/eliteprox/livepeer-python-gateway.git", rev = "3250c08cb6424d339614f1e9095064fbe7e6da6e" }
+livepeer-gateway = { git = "https://github.com/eliteprox/livepeer-python-gateway.git", rev = "d8e2b80048feae7f831be1f10206f63fa73b963e" }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

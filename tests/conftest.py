@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import os
+import socket
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -90,6 +91,13 @@ async def serve(app: web.Application) -> AsyncIterator[str]:
         await runner.cleanup()
 
 
+def free_port() -> int:
+    """A local port nothing listens on."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 @dataclass(frozen=True)
 class Sign:
     """One ticket the signer issued: what Batteries records as a usage row."""
@@ -115,8 +123,8 @@ class FakeSigner:
     payment: str = "payment-b64"
     seg_creds: str = "segment-b64"
     url: str = ""
-    # Statuses the next /generate-live-payment requests answer with instead of signing.
-    fail_with: list[int] = field(default_factory=list)
+    # Statuses the next /generate-live-payment requests answer with; None signs.
+    fail_with: list[int | None] = field(default_factory=list)
     signs: list[Sign] = field(default_factory=list)
     payment_requests: list[dict[str, Any]] = field(default_factory=list)
     payment_headers: list[dict[str, str]] = field(default_factory=list)
@@ -153,8 +161,9 @@ class FakeSigner:
         body = await request.json()
         self.payment_requests.append(body)
         self.payment_headers.append(dict(request.headers))
-        if self.fail_with:
-            return web.Response(status=self.fail_with.pop(0), text="refused")
+        failure = self.fail_with.pop(0) if self.fail_with else None
+        if failure is not None:
+            return web.Response(status=failure, text="refused")
         bearer = request.headers.get("Authorization", "").removeprefix("Bearer ")
         allocation_id = self.allocations.get(bearer)
         if allocation_id is None:
