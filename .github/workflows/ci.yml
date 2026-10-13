@@ -43,7 +43,7 @@ jobs:
       # These two have no wheel: this project, and the gateway commit uv.lock pins.
       - name: Install
         run: >-
-          uv sync --locked --all-groups --no-build
+          uv sync --locked --all-groups --all-extras --no-build
           --no-binary-package livepeer-builder
           --no-binary-package livepeer-gateway
       - name: Type check
