@@ -86,7 +86,7 @@ class CostSyncStore(Protocol):
 
 
 class EngineStore(CostSyncStore, Protocol):
-    """What job dispatch persists. PostgresStore and MemoryStore implement it."""
+    """Everything the engine persists. PostgresStore and MemoryStore implement it."""
 
     async def record_actor(self, actor: ProvisionedActor) -> None: ...
 

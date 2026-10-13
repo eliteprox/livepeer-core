@@ -10,8 +10,8 @@ import base64
 import json
 import os
 import socket
-from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -22,7 +22,7 @@ import asyncpg
 import pytest
 from aiohttp import web
 
-from livepeer_builder.contracts import UsageRow
+from livepeer_builder.contracts import UsagePage, UsageRow
 from livepeer_builder.store.postgres import PostgresStore
 
 TEST_DATABASE = "livepeer_test"
@@ -128,12 +128,21 @@ class FakeSigner:
     signs: list[Sign] = field(default_factory=list)
     payment_requests: list[dict[str, Any]] = field(default_factory=list)
     payment_headers: list[dict[str, str]] = field(default_factory=list)
+    # What /discover-orchestrators returns: orchestrator entries with their runners.
+    discovery: list[dict[str, Any]] = field(default_factory=list)
+    discovery_headers: list[dict[str, str]] = field(default_factory=list)
 
     def app(self) -> web.Application:
         app = web.Application()
         app.router.add_post("/sign-orchestrator-info", self._sign_orchestrator_info)
         app.router.add_post("/generate-live-payment", self._generate_live_payment)
+        app.router.add_get("/discover-orchestrators", self._discover_orchestrators)
         return app
+
+    async def page(self, cursor: str | None, limit: int = 1000) -> UsagePage:
+        """The usage feed: one applied row per sign so far, as Batteries serves it."""
+        del cursor, limit
+        return UsagePage(items=self.usage_rows(), next_cursor="")
 
     def usage_rows(self, fee_eth: str = "0.01") -> tuple[UsageRow, ...]:
         return tuple(
@@ -153,6 +162,10 @@ class FakeSigner:
             )
             for index, sign in enumerate(self.signs, start=1)
         )
+
+    async def _discover_orchestrators(self, request: web.Request) -> web.Response:
+        self.discovery_headers.append(dict(request.headers))
+        return web.json_response(self.discovery)
 
     async def _sign_orchestrator_info(self, request: web.Request) -> web.Response:
         return web.json_response({"address": self.address, "signature": "0xsignature"})
@@ -245,3 +258,16 @@ async def runner() -> AsyncIterator[FakeRunner]:
     async with serve(fake.app()) as url:
         fake.url = url
         yield fake
+
+
+@pytest.fixture
+async def make_runner() -> AsyncIterator[Callable[..., Awaitable[FakeRunner]]]:
+    """Start more runners in one test: ``await make_runner(statuses=[402, 200])``."""
+    async with AsyncExitStack() as stack:
+
+        async def start(**kwargs: Any) -> FakeRunner:
+            fake = FakeRunner(**kwargs)
+            fake.url = await stack.enter_async_context(serve(fake.app()))
+            return fake
+
+        yield start
